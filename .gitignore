@@ -1,2 +1,10 @@
-# Root .gitignore ignores .env.*; the example holds dev placeholders only.
+# macOS
+.DS_Store
+
+# Cargo
+target/
+
+# Secrets / config: .env holds real values; .env.example holds dev placeholders only.
+.env
+.env.*
 !.env.example
