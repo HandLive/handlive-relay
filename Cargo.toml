@@ -5,7 +5,7 @@ members = ["crates/relay-server"]
 [workspace.package]
 edition = "2024"
 rust-version = "1.88"
-license = "UNLICENSED"
+license = "Apache-2.0"
 publish = false
 
 # Pin the relay stack in one place. actix-ws is pinned here for the /v1/relay
