@@ -4,8 +4,13 @@ Cloud relay (Rust, actix-web 4, sqlx/PostgreSQL 16, Redis 7). Zero-knowledge:
 it never decrypts or logs payloads — logs carry only path, status, size and
 error code.
 
+This repository is one part of the HandLive workspace: the hub repository
+`handlive` (docs, plans) is the parent directory and `../shared` is the
+`handlive-shared` repository (tests read `../shared/test-vectors`). Clone the
+set from the hub with `tools/workspace.sh clone <group-url>`; see `CLAUDE.md`.
+
 Phase 0 scope: Cargo workspace, schema migration (spec
-`docs/detailed-design/00-common-specs.md` 0.9.4), device registration and
+`../docs/detailed-design/00-common-specs.md` 0.9.4), device registration and
 authentication:
 
 | Method | Path | Spec |
