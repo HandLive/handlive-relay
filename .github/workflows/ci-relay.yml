@@ -58,6 +58,8 @@ jobs:
     steps:
       - name: Resolve matching branches of the hub and handlive-shared
         id: refs
+        # relay/ does not exist before the checkout below, so this step cannot use the job's working directory.
+        working-directory: .
         env:
           BRANCH: ${{ github.head_ref || github.ref_name }}
           OWNER: ${{ github.repository_owner }}
@@ -141,6 +143,8 @@ jobs:
     steps:
       - name: Resolve matching branches of the hub and handlive-shared
         id: refs
+        # relay/ does not exist before the checkout below, so this step cannot use the job's working directory.
+        working-directory: .
         env:
           BRANCH: ${{ github.head_ref || github.ref_name }}
           OWNER: ${{ github.repository_owner }}
