@@ -67,3 +67,7 @@ docker compose down -v                    # stop and drop the dev volume
 | `RELAY_JWT_SECRET` | HS256 key for device JWTs, ≥ 32 bytes (`openssl rand -base64 48`). Never commit it |
 | `RELAY_BIND` | Listen address, default `127.0.0.1:8080` |
 | `RUST_LOG` | Log filter, default `info` |
+
+## License
+
+Apache License 2.0 — see [LICENSE](LICENSE). Contributions follow the org [CONTRIBUTING](https://github.com/HandLive/.github/blob/main/CONTRIBUTING.md) (small commits under a real name, DCO sign-off with `git commit -s`); report vulnerabilities privately per [SECURITY](https://github.com/HandLive/.github/blob/main/SECURITY.md).
