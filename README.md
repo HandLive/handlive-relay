@@ -1,8 +1,10 @@
+English | [Tiếng Việt](README.vi.md)
+
 # handlive-relay
 
-Máy chủ trung gian khi các thiết bị không cùng mạng nội bộ. Viết bằng Rust và Actix-web. Relay chỉ chuyển tiếp dữ liệu đã mã hóa, không giải mã và không ghi nội dung vào log. Log chỉ có đường dẫn, mã trạng thái, kích thước và mã lỗi.
+The HandLive cloud relay carries traffic between devices that are not on the same local network. It is zero-knowledge: it only forwards end-to-end encrypted data, never decrypts it and never logs content — logs carry only path, status, size and error code.
 
-Cloud relay (Rust, actix-web 4, sqlx/PostgreSQL 16, Redis 7).
+Rust, actix-web 4, sqlx/PostgreSQL 16, Redis 7. The relay has no user interface and sends no user-facing text: errors are codes, and devices localize them (detailed design 0.12).
 
 This repository is one part of the HandLive workspace: the hub repository
 `handlive` (docs, plans) is the parent directory and `../shared` is the
