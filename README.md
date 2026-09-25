@@ -1,8 +1,8 @@
-# HandLive relay
+# handlive-relay
 
-Cloud relay (Rust, actix-web 4, sqlx/PostgreSQL 16, Redis 7). Zero-knowledge:
-it never decrypts or logs payloads — logs carry only path, status, size and
-error code.
+Máy chủ trung gian khi các thiết bị không cùng mạng nội bộ. Viết bằng Rust và Actix-web. Relay chỉ chuyển tiếp dữ liệu đã mã hóa, không giải mã và không ghi nội dung vào log. Log chỉ có đường dẫn, mã trạng thái, kích thước và mã lỗi.
+
+Cloud relay (Rust, actix-web 4, sqlx/PostgreSQL 16, Redis 7).
 
 This repository is one part of the HandLive workspace: the hub repository
 `handlive` (docs, plans) is the parent directory and `../shared` is the
