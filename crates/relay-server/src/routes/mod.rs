@@ -7,10 +7,19 @@ pub mod relay_ws;
 
 use actix_web::web;
 
+/// Body limit of `PUT /v1/devices/me/push-token` (token up to 4,096 chars).
+const PUSH_TOKEN_BODY_BYTES: usize = 8 * 1024;
+
 pub fn configure(cfg: &mut web::ServiceConfig) {
     cfg.service(
         web::scope("/v1")
             .route("/devices", web::post().to(devices::register))
+            .route("/devices/me", web::delete().to(devices::delete_me))
+            .service(
+                web::resource("/devices/me/push-token")
+                    .app_data(json_config(PUSH_TOKEN_BODY_BYTES))
+                    .route(web::put().to(devices::put_push_token)),
+            )
             .route("/auth/challenge", web::post().to(auth::challenge))
             .route("/auth/token", web::post().to(auth::token))
             .route("/pairs", web::post().to(pairs::register))
