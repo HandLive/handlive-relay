@@ -98,7 +98,7 @@ async fn relay_recovers_when_redis_loses_presence_and_connections() {
     }
 
     // Forwarding resumes: frames sent while the bus reconnects may be
-    // refused (NOT_CONNECTED / INTERNAL, never silently lost), then they flow.
+    // refused (NOT_CONNECTED, never silently lost), then they flow.
     let mut delivered = false;
     for attempt in 0..50 {
         let env = envelope("sms", &format!("attempt-{attempt}"));
@@ -112,10 +112,7 @@ async fn relay_recovers_when_redis_loses_presence_and_connections() {
             break;
         }
         let refused = mac_ws.recv_json().await;
-        assert!(
-            matches!(refused["code"].as_str(), Some("NOT_CONNECTED" | "INTERNAL")),
-            "{refused}"
-        );
+        assert!(refused["code"] == "NOT_CONNECTED", "{refused}");
     }
     assert!(delivered, "forwarding did not resume");
     for i in 0..20 {

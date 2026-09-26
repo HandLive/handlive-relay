@@ -44,6 +44,11 @@ pub fn parse_inbound(text: &str) -> Option<Inbound<'_>> {
     serde_json::from_str(text).ok()
 }
 
+/// A `device_id` is a UUIDv8 (spec 0.2); anything else cannot name a device.
+pub fn is_device_id(id: &Uuid) -> bool {
+    id.get_version_num() == 8 && id.get_variant() == uuid::Variant::RFC4122
+}
+
 /// True when the raw JSON value is an object (an envelope).
 pub fn is_object(raw: &RawValue) -> bool {
     raw.get().trim_start().starts_with('{')
@@ -74,15 +79,15 @@ pub fn rewrite_hr(frame: &[u8], source: &Uuid) -> Vec<u8> {
     out
 }
 
-/// Error codes of the relay `error` op (CONN-03 API 5).
+/// Error codes of the relay `error` op (CONN-03 API 5), the only ones the
+/// relay sends there. A frame the relay cannot pass on because Redis failed
+/// is answered `NOT_CONNECTED`: the peer cannot be reached right now.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RelayError {
     NotPaired,
     NotConnected,
     PayloadTooLarge,
     BadRequest,
-    /// The relay could not forward (Redis unavailable); spec 0.8.1 `INTERNAL`.
-    Internal,
 }
 
 impl RelayError {
@@ -92,7 +97,6 @@ impl RelayError {
             Self::NotConnected => "NOT_CONNECTED",
             Self::PayloadTooLarge => "PAYLOAD_TOO_LARGE",
             Self::BadRequest => "BAD_REQUEST",
-            Self::Internal => "INTERNAL",
         }
     }
 
@@ -102,7 +106,6 @@ impl RelayError {
             Self::NotConnected => "Destination is not connected",
             Self::PayloadTooLarge => "Frame exceeds 256 KiB",
             Self::BadRequest => "Malformed frame",
-            Self::Internal => "Relay could not forward the frame",
         }
     }
 }

@@ -55,6 +55,17 @@ fn malformed_wrappers_are_detected() {
 }
 
 #[test]
+fn only_uuid_v8_names_a_device() {
+    assert!(wire::is_device_id(&uuid(A)));
+    assert!(!wire::is_device_id(&Uuid::new_v4()));
+    assert!(!wire::is_device_id(&Uuid::nil()));
+    // Version 8 with a non-RFC variant.
+    assert!(!wire::is_device_id(&uuid(
+        "5b1f8c2e-9a4d-8e6f-c1b2-c3d4e5f60718"
+    )));
+}
+
+#[test]
 fn hr_frame_destination_becomes_source() {
     let hl = [0x48, 0x4C, 0x01, 0, 0, 0, 7, 0, 0, 0, 9, 0xAA, 0xBB];
     let mut frame = vec![0x48, 0x52, 0x01, 0x01];
@@ -108,7 +119,6 @@ fn control_messages_follow_the_catalog() {
     for (e, code) in [
         (RelayError::NotConnected, "NOT_CONNECTED"),
         (RelayError::PayloadTooLarge, "PAYLOAD_TOO_LARGE"),
-        (RelayError::Internal, "INTERNAL"),
     ] {
         assert_eq!(e.code(), code);
     }

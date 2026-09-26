@@ -31,6 +31,9 @@ impl Conn {
             Some("rv_msg") => self.rv_msg(inbound.rv_id.as_deref(), inbound.env).await,
             Some(_) => self.send_error(RelayError::BadRequest, None).await,
             None => match (inbound.to, inbound.env) {
+                (Some(to), _) if !wire::is_device_id(&to) => {
+                    self.send_error(RelayError::BadRequest, None).await
+                }
                 (Some(to), Some(env)) if wire::is_object(env) => {
                     let bus = BusMessage::ForwardText {
                         from: self.device_id,
@@ -44,7 +47,7 @@ impl Conn {
     }
 
     pub(super) async fn handle_binary(&mut self, frame: &[u8]) -> Option<End> {
-        let Some(to) = wire::parse_hr(frame) else {
+        let Some(to) = wire::parse_hr(frame).filter(wire::is_device_id) else {
             return self.send_error(RelayError::BadRequest, None).await;
         };
         if frame.len() > wire::MAX_FRAME_BYTES {
@@ -97,7 +100,7 @@ impl Conn {
             }
             Err(e) => {
                 log::warn!("relay publish failed: {e}");
-                self.send_error(RelayError::Internal, Some(&p.to)).await
+                self.send_error(RelayError::NotConnected, Some(&p.to)).await
             }
         }
     }
@@ -112,7 +115,7 @@ impl Conn {
             Ok(Join::Full) => return self.send_error(RelayError::BadRequest, None).await,
             Err(e) => {
                 log::warn!("rendezvous join failed: {e}");
-                return self.send_error(RelayError::Internal, None).await;
+                return self.send_error(RelayError::NotConnected, None).await;
             }
         };
         let (newly, members) = joined;
@@ -148,7 +151,7 @@ impl Conn {
             Ok(members) => members,
             Err(e) => {
                 log::warn!("rendezvous lookup failed: {e}");
-                return self.send_error(RelayError::Internal, None).await;
+                return self.send_error(RelayError::NotConnected, None).await;
             }
         };
         if !members.contains(&self.device_id) {
@@ -165,7 +168,7 @@ impl Conn {
             Ok(_) => None,
             Err(e) => {
                 log::warn!("rendezvous publish failed: {e}");
-                self.send_error(RelayError::Internal, None).await
+                self.send_error(RelayError::NotConnected, None).await
             }
         }
     }
