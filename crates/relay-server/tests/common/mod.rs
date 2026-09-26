@@ -2,6 +2,7 @@
 #![allow(dead_code, unused_imports, unused_macros)]
 
 pub mod http_harness;
+pub mod relay_harness;
 
 use ed25519_dalek::{Signer, SigningKey};
 use relay_server::b64u;

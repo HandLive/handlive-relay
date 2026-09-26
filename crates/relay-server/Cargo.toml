@@ -27,3 +27,5 @@ subtle.workspace = true
 [dev-dependencies]
 actix-http.workspace = true
 hex.workspace = true
+tokio-tungstenite.workspace = true
+futures-util = { workspace = true, features = ["sink"] }
