@@ -68,7 +68,7 @@ fn reasons_follow_conn04_api2() {
         ("sms_send", Kind::Wake, 60),
         ("call_action", Kind::Wake, 60),
         ("sms_new", Kind::Alert, 86_400),
-        ("call_incoming", Kind::Alert, 60),
+        ("call_incoming", Kind::Alert, 30),
         ("call_missed", Kind::Alert, 86_400),
     ];
     for (text, kind, ttl) in table {

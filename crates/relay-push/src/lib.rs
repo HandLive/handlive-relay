@@ -68,12 +68,14 @@ impl Reason {
         }
     }
 
-    /// `ttl_s` when the request has none: 60 s for wakes and incoming calls,
-    /// 86,400 s for new SMS and missed calls.
+    /// `ttl_s` when the request has none (CONN-04 API 2): 60 s for wakes,
+    /// 30 s for an incoming call (the value CALL-01 API 4 sends), 86,400 s
+    /// for new SMS and missed calls.
     pub fn default_ttl_s(self) -> u32 {
         match self {
             Self::SmsNew | Self::CallMissed => 86_400,
-            _ => 60,
+            Self::CallIncoming => 30,
+            Self::UserOpen | Self::SmsSend | Self::CallAction => 60,
         }
     }
 }

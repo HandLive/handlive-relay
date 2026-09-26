@@ -81,7 +81,7 @@ async fn apns_alerts_carry_the_spec_headers_and_payload() {
     assert_eq!(second.body["aps"]["interruption-level"], "time-sensitive");
     assert_eq!(second.body["aps"]["thread-id"], "calls");
     let expiration: u64 = second.headers["apns-expiration"].parse().unwrap();
-    assert!(expiration.abs_diff(now_s() + 60) <= 5);
+    assert!(expiration.abs_diff(now_s() + 30) <= 5);
     // The provider token is reused, not signed per push.
     assert_eq!(
         first.headers["authorization"],
