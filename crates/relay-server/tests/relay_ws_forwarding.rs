@@ -170,6 +170,15 @@ async fn unpaired_offline_and_malformed_frames_get_errors() {
         without_message(mac_ws.recv_json().await),
         error("BAD_REQUEST", None)
     );
+    // An oversized wrapper whose `to` is not a device id is malformed first.
+    let not_a_device = Uuid::new_v4();
+    mac_ws
+        .send_json(&json!({"to": not_a_device, "env": envelope("clipboard", &big)}))
+        .await;
+    assert_eq!(
+        without_message(mac_ws.recv_json().await),
+        error("BAD_REQUEST", None)
+    );
     // Just under the limit is fine (peer offline → NOT_CONNECTED, not a size error).
     let fits = "A".repeat(200 * 1024);
     mac_ws

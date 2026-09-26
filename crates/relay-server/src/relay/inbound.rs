@@ -20,28 +20,29 @@ impl Conn {
         let Some(inbound) = wire::parse_inbound(text) else {
             return self.send_error(RelayError::BadRequest, None).await;
         };
-        if text.len() > wire::MAX_FRAME_BYTES {
-            let to = inbound.to;
-            return self
-                .send_error(RelayError::PayloadTooLarge, to.as_ref())
-                .await;
-        }
+        let oversize = text.len() > wire::MAX_FRAME_BYTES;
         match inbound.op.as_deref() {
+            Some("rv_join" | "rv_msg") if oversize => {
+                self.send_error(RelayError::PayloadTooLarge, None).await
+            }
             Some("rv_join") => self.rv_join(inbound.rv_id.as_deref()).await,
             Some("rv_msg") => self.rv_msg(inbound.rv_id.as_deref(), inbound.env).await,
             Some(_) => self.send_error(RelayError::BadRequest, None).await,
             None => match (inbound.to, inbound.env) {
-                (Some(to), _) if !wire::is_device_id(&to) => {
-                    self.send_error(RelayError::BadRequest, None).await
-                }
-                (Some(to), Some(env)) if wire::is_object(env) => {
+                (Some(to), Some(env)) if wire::is_device_id(&to) && wire::is_object(env) => {
+                    if oversize {
+                        return self
+                            .send_error(RelayError::PayloadTooLarge, Some(&to))
+                            .await;
+                    }
                     let bus = BusMessage::ForwardText {
                         from: self.device_id,
                         text: wire::forwarded_text(&self.device_id, env),
                     };
                     self.forward(to, bus, text.len()).await
                 }
-                // A malformed wrapper never echoes its `to` (CONN-03 API 6 logic 1).
+                // A malformed wrapper, including a `to` that is not a device
+                // id, never echoes its `to` (CONN-03 API 6 logic 1).
                 _ => self.send_error(RelayError::BadRequest, None).await,
             },
         }
