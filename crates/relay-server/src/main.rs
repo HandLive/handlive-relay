@@ -1,7 +1,7 @@
 //! Relay server entry point: read config, connect, migrate, serve.
 
-use actix_web::{App, HttpServer, middleware::Logger, web};
-use relay_server::{MIGRATOR, config::Config, configure, state::AppState};
+use actix_web::{App, HttpServer, web};
+use relay_server::{MIGRATOR, access_log, config::Config, configure, maintenance, state::AppState};
 
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
@@ -17,11 +17,11 @@ async fn main() -> std::io::Result<()> {
     log::info!("migrations applied; listening on {}", config.bind);
 
     let state = web::Data::new(state);
+    maintenance::spawn(state.clone());
     HttpServer::new(move || {
         App::new()
             .app_data(state.clone())
-            // Path, status, response size and latency only: no query, no body.
-            .wrap(Logger::new("%U %s %b %Dms"))
+            .wrap(access_log())
             .configure(configure)
     })
     .bind(&config.bind)?

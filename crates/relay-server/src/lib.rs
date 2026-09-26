@@ -13,6 +13,7 @@ pub mod device_identity;
 pub mod error;
 pub mod jwt;
 pub mod limits;
+pub mod maintenance;
 pub mod relay;
 pub mod routes;
 pub mod signatures;
@@ -20,6 +21,7 @@ pub mod state;
 pub mod store;
 pub mod usage;
 
+use actix_web::middleware::Logger;
 use actix_web::web;
 
 /// Largest JSON body accepted on the auth/registration endpoints.
@@ -38,4 +40,10 @@ pub fn configure(cfg: &mut web::ServiceConfig) {
             web::PathConfig::default().error_handler(|_, _| error::ApiError::BadRequest.into()),
         )
         .configure(routes::configure);
+}
+
+/// Access log: path, status, response size and latency only — no query
+/// string, no body, no header (spec 0.5.1 rule 5, 0.6.5).
+pub fn access_log() -> Logger {
+    Logger::new("%U %s %b %Dms")
 }
