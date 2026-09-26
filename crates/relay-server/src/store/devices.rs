@@ -160,3 +160,45 @@ pub async fn delete_with_peers(
         .map(|r| Ok((r.try_get("pair_id")?, r.try_get("peer_device_id")?)))
         .collect()
 }
+
+/// Push registration of the other member of a valid pair.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PushTarget {
+    pub platform: String,
+    pub provider: Option<String>,
+    pub token: Option<String>,
+    pub topic: Option<String>,
+}
+
+/// `to`'s push registration when `from` and `to` are the two members of the
+/// non-revoked pair `pair_id` and `to` is not locked out (CONN-04 API 2).
+pub async fn push_target(
+    pool: &PgPool,
+    pair_id: Uuid,
+    from: Uuid,
+    to: Uuid,
+) -> Result<Option<PushTarget>, sqlx::Error> {
+    let row = sqlx::query(
+        "SELECT d.platform, d.push_provider, d.push_token, d.push_topic
+         FROM pairs p
+         JOIN devices d ON d.device_id = $3
+         WHERE p.pair_id = $1
+           AND p.revoked_at IS NULL
+           AND ((p.device_a = $2 AND p.device_b = $3) OR (p.device_b = $2 AND p.device_a = $3))
+           AND d.revoked_at IS NULL",
+    )
+    .bind(pair_id)
+    .bind(from)
+    .bind(to)
+    .fetch_optional(pool)
+    .await?;
+    row.map(|r| {
+        Ok(PushTarget {
+            platform: r.try_get("platform")?,
+            provider: r.try_get("push_provider")?,
+            token: r.try_get("push_token")?,
+            topic: r.try_get("push_topic")?,
+        })
+    })
+    .transpose()
+}

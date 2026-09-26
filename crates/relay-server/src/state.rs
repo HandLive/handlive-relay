@@ -3,6 +3,7 @@
 use std::sync::Arc;
 
 use redis::aio::ConnectionManager;
+use relay_push::PushGateway;
 use ring::rand::SystemRandom;
 use sqlx::PgPool;
 use sqlx::postgres::PgPoolOptions;
@@ -20,13 +21,15 @@ pub struct AppState {
     pub hub: Arc<Hub>,
     pub usage: Usage,
     pub settings: RelaySettings,
+    pub push: PushGateway,
 }
 
 impl AppState {
-    /// Connect to PostgreSQL and Redis and start the relay bus task on the
-    /// current runtime. Does not run migrations.
+    /// Load the push keys, connect to PostgreSQL and Redis and start the
+    /// relay bus task on the current runtime. Does not run migrations.
     pub async fn connect(config: &Config) -> Result<Self, String> {
         let jwt = JwtKeys::from_secret(&config.jwt_secret)?;
+        let push = PushGateway::new(&config.push)?;
         let db = PgPoolOptions::new()
             .max_connections(10)
             .connect(&config.database_url)
@@ -46,6 +49,7 @@ impl AppState {
             hub,
             usage: Usage::default(),
             settings: config.settings.clone(),
+            push,
         })
     }
 }

@@ -5,12 +5,16 @@ use std::env;
 use std::net::IpAddr;
 use std::time::Duration;
 
+use relay_push::PushConfig;
+
 pub struct Config {
     pub database_url: String,
     pub redis_url: String,
     pub jwt_secret: Vec<u8>,
     pub bind: String,
     pub settings: RelaySettings,
+    /// APNs and FCM (`RELAY_APNS_*`, `RELAY_FCM_*`); unset providers stay off.
+    pub push: PushConfig,
 }
 
 impl Config {
@@ -31,6 +35,7 @@ impl Config {
             jwt_secret: required("RELAY_JWT_SECRET")?.into_bytes(),
             bind: env::var("RELAY_BIND").unwrap_or_else(|_| "127.0.0.1:8080".to_owned()),
             settings,
+            push: PushConfig::from_env()?,
         })
     }
 }

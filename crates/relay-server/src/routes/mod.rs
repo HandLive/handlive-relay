@@ -3,6 +3,7 @@
 pub mod auth;
 pub mod devices;
 pub mod pairs;
+pub mod push;
 pub mod relay_ws;
 
 use actix_web::web;
@@ -25,6 +26,7 @@ pub fn configure(cfg: &mut web::ServiceConfig) {
             .route("/pairs", web::post().to(pairs::register))
             .route("/pairs", web::get().to(pairs::list))
             .route("/pairs/{pair_id}/revoke", web::post().to(pairs::revoke))
+            .route("/push", web::post().to(push::send))
             .route("/relay", web::get().to(relay_ws::connect)),
     );
 }

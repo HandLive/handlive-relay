@@ -176,6 +176,12 @@ pub async fn put_push_token(
     let (platform, _) = found.ok_or(ApiError::DeviceNotFound)?;
     let req = body.into_inner();
     let (provider, token, topic) = validate_push_token(&platform, &req)?;
+    // With APNs configured, a token must be for this relay's app.
+    if let (Some(topic), Some(expected)) = (topic, state.push.apns_topic())
+        && topic != expected
+    {
+        return Err(ApiError::BadRequest);
+    }
     let token = if provider == "fcm" {
         token.to_owned()
     } else {

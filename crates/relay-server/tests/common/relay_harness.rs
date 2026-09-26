@@ -53,6 +53,7 @@ impl Relay {
             jwt_secret: TEST_JWT_SECRET.as_bytes().to_vec(),
             bind: String::new(),
             settings,
+            push: Default::default(),
         };
         let state = web::Data::new(AppState::connect(&config).await.expect("connect"));
         MIGRATOR.run(&state.db).await.expect("migrate");

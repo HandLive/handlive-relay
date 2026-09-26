@@ -214,6 +214,7 @@ async fn limited_state(proxy: &str) -> web::Data<AppState> {
             trusted_proxies: vec![proxy.parse().unwrap()],
             ..RelaySettings::default()
         },
+        push: Default::default(),
     };
     let state = AppState::connect(&config).await.unwrap();
     MIGRATOR.run(&state.db).await.unwrap();
