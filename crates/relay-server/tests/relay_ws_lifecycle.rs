@@ -11,7 +11,8 @@ use std::time::Duration;
 use actix_web::http::StatusCode;
 use common::http_harness::TEST_JWT_SECRET;
 use common::relay_harness::{
-    Relay, call, connect, enroll, envelope, pair, presence, rest, test_settings, try_connect,
+    Relay, call, connect, enroll, envelope, pair, presence, rest, silent_close_code,
+    silent_connect, test_settings, try_connect,
 };
 use redis::AsyncCommands;
 use relay_server::clock::now_ms;
@@ -118,10 +119,9 @@ async fn a_silent_connection_is_closed_as_idle() {
     let relay = Relay::start(settings).await;
     let app = rest!(relay);
     let mac = enroll(&app, "macos").await;
-    let mut ws = connect(&relay, &mac).await;
-    // Not reading means not answering the relay's pings.
-    tokio::time::sleep(Duration::from_millis(900)).await;
-    assert_eq!(ws.expect_close().await, Some(4411));
+    // A peer that answers nothing, not even the relay's pings.
+    let mut silent = silent_connect(&relay, &mac.token).await;
+    assert_eq!(silent_close_code(&mut silent).await, Some(4411));
     // Presence is released with the connection.
     let mut redis = relay.state.redis.clone();
     for _ in 0..50 {

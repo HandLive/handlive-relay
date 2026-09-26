@@ -18,6 +18,7 @@ use relay_server::relay::presence::presence_key;
 use relay_server::state::AppState;
 use relay_server::{MIGRATOR, access_log, b64u, configure};
 use serde_json::{Value, json};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
@@ -195,6 +196,24 @@ pub async fn pair(app: &impl TestService, android: &Member, client: &Member) -> 
 
 pub type Socket = WebSocketStream<MaybeTlsStream<TcpStream>>;
 
+/// What reading the socket produced.
+#[derive(Debug)]
+pub enum Event {
+    Frame(Message),
+    /// The socket ended or failed.
+    Dropped,
+    Timeout,
+}
+
+/// How the relay ended a connection.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Ending {
+    Code(u16),
+    NoCode,
+    /// Gone without a readable close frame (e.g. reset while data was in flight).
+    Dropped,
+}
+
 /// A device's relay connection.
 pub struct WsClient {
     pub ws: Socket,
@@ -245,15 +264,21 @@ impl WsClient {
 
     /// Next data or close frame within `wait` (pings are answered and skipped).
     pub async fn next(&mut self, wait: Duration) -> Option<Message> {
+        match self.event(wait).await {
+            Event::Frame(m) => Some(m),
+            Event::Dropped | Event::Timeout => None,
+        }
+    }
+
+    /// Next data or close frame, the socket ending, or nothing within `wait`.
+    pub async fn event(&mut self, wait: Duration) -> Event {
         let deadline = tokio::time::Instant::now() + wait;
         loop {
-            let msg = tokio::time::timeout_at(deadline, self.ws.next())
-                .await
-                .ok()??;
-            match msg {
-                Ok(Message::Ping(_) | Message::Pong(_)) => continue,
-                Ok(m) => return Some(m),
-                Err(_) => return None,
+            match tokio::time::timeout_at(deadline, self.ws.next()).await {
+                Err(_) => return Event::Timeout,
+                Ok(None) | Ok(Some(Err(_))) => return Event::Dropped,
+                Ok(Some(Ok(Message::Ping(_) | Message::Pong(_)))) => continue,
+                Ok(Some(Ok(m))) => return Event::Frame(m),
             }
         }
     }
@@ -284,11 +309,23 @@ impl WsClient {
     }
 
     /// The close code the relay sent (`None` when the socket just ended).
+    /// The relay's close code; panics when no close frame arrives.
     pub async fn expect_close(&mut self) -> Option<u16> {
-        match self.next(WAIT).await {
-            Some(Message::Close(frame)) => frame.map(|f| u16::from(f.code)),
-            None => None,
-            Some(other) => panic!("expected close, got {other:?}"),
+        match self.expect_end().await {
+            Ending::Code(code) => Some(code),
+            Ending::NoCode => None,
+            Ending::Dropped => panic!("socket dropped without a close frame"),
+        }
+    }
+
+    /// How the connection ended; panics on a data frame or a timeout.
+    pub async fn expect_end(&mut self) -> Ending {
+        match self.event(WAIT).await {
+            Event::Frame(Message::Close(Some(frame))) => Ending::Code(u16::from(frame.code)),
+            Event::Frame(Message::Close(None)) => Ending::NoCode,
+            Event::Dropped => Ending::Dropped,
+            Event::Timeout => panic!("the connection did not end"),
+            Event::Frame(other) => panic!("expected close, got {other:?}"),
         }
     }
 
@@ -305,4 +342,58 @@ pub fn presence(pair_id: Uuid, peer: Uuid, online: bool) -> Value {
 /// An envelope with a recognisable payload.
 pub fn envelope(kind: &str, marker: &str) -> Value {
     json!({"v":1,"type":kind,"id":Uuid::new_v4(),"ts":now_ms(),"payload":marker})
+}
+
+/// A client that completes the WebSocket upgrade and then never writes a
+/// byte — not even pongs — like a peer whose network died.
+pub async fn silent_connect(relay: &Relay, token: &str) -> TcpStream {
+    let mut stream = TcpStream::connect(relay.addr).await.unwrap();
+    let request = format!(
+        "GET /v1/relay HTTP/1.1\r\nHost: {}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\
+         Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\
+         Authorization: Bearer {token}\r\n\r\n",
+        relay.addr
+    );
+    stream.write_all(request.as_bytes()).await.unwrap();
+    let mut head = Vec::new();
+    let mut byte = [0u8; 1];
+    while !head.ends_with(b"\r\n\r\n") {
+        stream.read_exact(&mut byte).await.unwrap();
+        head.push(byte[0]);
+    }
+    assert!(
+        head.starts_with(b"HTTP/1.1 101"),
+        "{}",
+        String::from_utf8_lossy(&head)
+    );
+    stream
+}
+
+/// Read server frames (without answering them) until the close frame;
+/// returns its code, or `None` when the stream ends first.
+pub async fn silent_close_code(stream: &mut TcpStream) -> Option<u16> {
+    let read = async {
+        loop {
+            let mut head = [0u8; 2];
+            stream.read_exact(&mut head).await.ok()?;
+            let mut len = u64::from(head[1] & 0x7f);
+            if len == 126 {
+                let mut ext = [0u8; 2];
+                stream.read_exact(&mut ext).await.ok()?;
+                len = u64::from(u16::from_be_bytes(ext));
+            } else if len == 127 {
+                let mut ext = [0u8; 8];
+                stream.read_exact(&mut ext).await.ok()?;
+                len = u64::from_be_bytes(ext);
+            }
+            let mut payload = vec![0u8; len as usize];
+            stream.read_exact(&mut payload).await.ok()?;
+            if head[0] & 0x0f == 0x8 {
+                return payload.get(..2).map(|c| u16::from_be_bytes([c[0], c[1]]));
+            }
+        }
+    };
+    tokio::time::timeout(WAIT, read)
+        .await
+        .expect("no close frame in time")
 }

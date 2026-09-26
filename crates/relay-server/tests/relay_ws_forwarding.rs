@@ -9,7 +9,7 @@ use std::collections::HashSet;
 use std::time::Duration;
 
 use common::relay_harness::{
-    Relay, connect, enroll, envelope, pair, presence, rest, test_settings,
+    Ending, Relay, connect, enroll, envelope, pair, presence, rest, test_settings,
 };
 use serde_json::{Value, json};
 use tokio_tungstenite::tungstenite::Message;
@@ -180,11 +180,17 @@ async fn unpaired_offline_and_malformed_frames_get_errors() {
         error("NOT_CONNECTED", Some(&a))
     );
 
-    // Beyond the decoder limit (1 MiB) the relay closes with 4400.
+    // Beyond the decoder limit (1 MiB) the relay closes with 4400. It stops
+    // reading the oversized frame, so the close frame can be lost to a TCP
+    // reset while the client is still sending; the connection must end.
     mac_ws
         .send_binary(hr_frame(&a, &vec![0; 1024 * 1024 + 1]))
         .await;
-    assert_eq!(mac_ws.expect_close().await, Some(4400));
+    let ending = mac_ws.expect_end().await;
+    assert!(
+        matches!(ending, Ending::Code(4400) | Ending::Dropped),
+        "{ending:?}"
+    );
     relay.stop().await;
 }
 
