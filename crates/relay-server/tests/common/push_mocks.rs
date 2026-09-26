@@ -5,7 +5,7 @@
 //! details are tested in `relay-push`.
 
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use actix_web::dev::ServerHandle;
 use actix_web::{App, HttpRequest, HttpResponse, HttpServer, web};
@@ -189,5 +189,41 @@ pub async fn start() -> Providers {
         config,
         handles,
         dir,
+    }
+}
+
+/// APNs configured with a key generated once per test binary (under Cargo's
+/// target tmp directory) and endpoints nobody listens on: enough for tests
+/// that register APNs tokens, which the relay accepts only for its
+/// configured topic (CONN-04 API 1), without sending anything.
+pub fn offline_config() -> PushConfig {
+    static KEY: OnceLock<PathBuf> = OnceLock::new();
+    let key_path = KEY
+        .get_or_init(|| {
+            let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR"));
+            std::fs::create_dir_all(&dir).unwrap();
+            let pkcs8 = EcdsaKeyPair::generate_pkcs8(
+                &ECDSA_P256_SHA256_FIXED_SIGNING,
+                &SystemRandom::new(),
+            )
+            .unwrap();
+            let path = dir.join("offline-AuthKey.p8");
+            let partial = dir.join(format!("offline-AuthKey.{}.tmp", std::process::id()));
+            std::fs::write(&partial, pem("PRIVATE KEY", pkcs8.as_ref())).unwrap();
+            std::fs::rename(&partial, &path).unwrap();
+            path
+        })
+        .clone();
+    let nowhere = "http://127.0.0.1:9".to_owned();
+    PushConfig {
+        apns: Some(ApnsConfig {
+            key_path,
+            key_id: "ABC123DEFG".to_owned(),
+            team_id: "DEF123GHIJ".to_owned(),
+            topic: TOPIC.to_owned(),
+            production_url: nowhere.clone(),
+            sandbox_url: nowhere,
+        }),
+        fcm: None,
     }
 }

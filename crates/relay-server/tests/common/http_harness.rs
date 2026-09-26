@@ -24,7 +24,7 @@ pub async fn state() -> web::Data<AppState> {
         jwt_secret: TEST_JWT_SECRET.as_bytes().to_vec(),
         bind: String::new(),
         settings: RelaySettings::default(),
-        push: Default::default(),
+        push: super::push_mocks::offline_config(),
     };
     let state = AppState::connect(&config).await.expect("connect");
     MIGRATOR.run(&state.db).await.expect("migrate");

@@ -325,29 +325,30 @@ async fn apns_tokens_must_name_the_configured_app() {
     .await;
     providers.stop().await;
 
-    // Without APNs configured the relay stores any well-formed topic and a
-    // push to it fails as a provider error.
+    // Without APNs configured no topic can match: no APNs token is stored,
+    // and a push to that device finds none.
     let state = state_with(PushConfig::default()).await;
     let app = test::init_service(App::new().app_data(state.clone()).configure(configure)).await;
     let android = enroll(&app, "android").await;
     let iphone = enroll(&app, "ios").await;
     let pair_id = paired(&app, &android, &iphone).await;
-    set_token(
-        &app,
-        &iphone,
-        json!({"provider": "apns", "token": "abcd", "topic": "com.example.other"}),
-    )
-    .await;
+    let token = json!({"provider": "apns", "token": "abcd", "topic": TOPIC});
     let (status, err) = call(
         &app,
-        "POST",
-        "/v1/push",
-        &android.token,
-        Some(&alert(pair_id, iphone.id(), "ZW52")),
+        "PUT",
+        "/v1/devices/me/push-token",
+        &iphone.token,
+        Some(&token),
     )
     .await;
     assert_eq!(
         (status, code(&err)),
-        (StatusCode::BAD_GATEWAY, "PUSH_PROVIDER_ERROR")
+        (StatusCode::BAD_REQUEST, "BAD_REQUEST")
+    );
+    let body = alert(pair_id, iphone.id(), "ZW52");
+    let (status, err) = call(&app, "POST", "/v1/push", &android.token, Some(&body)).await;
+    assert_eq!(
+        (status, code(&err)),
+        (StatusCode::CONFLICT, "PUSH_TOKEN_MISSING")
     );
 }
