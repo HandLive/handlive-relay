@@ -33,6 +33,7 @@ hex = "0.4"
 reqwest = { version = "0.13", default-features = false, features = ["rustls-no-provider", "http2", "json", "form"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 rsa = "0.9"
+jsonschema = { version = "0.58", default-features = false }
 tokio-tungstenite = { version = "0.30", default-features = false, features = ["connect", "handshake"] }
 
 # Test-only RSA key generation (relay-push mocks) is slow unoptimized.

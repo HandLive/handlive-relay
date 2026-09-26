@@ -4,6 +4,7 @@
 pub mod http_harness;
 pub mod push_mocks;
 pub mod relay_harness;
+pub mod schemas;
 
 use ed25519_dalek::{Signer, SigningKey};
 use relay_server::b64u;
