@@ -2,9 +2,9 @@
 
 # handlive-relay
 
-Máy chủ trung gian của HandLive khi các thiết bị không cùng mạng nội bộ. Relay không đọc nội dung: chỉ chuyển tiếp dữ liệu đã mã hóa đầu-cuối, không giải mã và không ghi nội dung vào log — log chỉ có đường dẫn, mã trạng thái, kích thước và mã lỗi.
+Máy chủ chuyển tiếp khi các thiết bị không cùng mạng. Relay không đọc nội dung. Relay chỉ chuyển tiếp dữ liệu đã mã hóa đầu-cuối, không giải mã và không ghi nội dung vào log. Log chỉ có đường dẫn, mã trạng thái, kích thước và mã lỗi.
 
-Rust, actix-web 4, sqlx/PostgreSQL 16, Redis 7. Relay không có giao diện và không gửi câu chữ hiển thị: lỗi là mã, thiết bị tự dịch theo ngôn ngữ của mình (thiết kế chi tiết 0.12).
+Rust, actix-web 4, sqlx/PostgreSQL 16, Redis 7. Relay không có giao diện và không gửi câu chữ hiển thị. Lỗi là mã. Thiết bị tự dịch mã theo ngôn ngữ đang dùng (thiết kế chi tiết 0.12).
 
 Kho này là một phần của workspace HandLive: kho hub `handlive` (tài liệu, kế hoạch) là thư mục cha, `../shared` là kho `handlive-shared` (test đọc `../shared/test-vectors`). Clone cả bộ từ hub bằng `tools/workspace.sh clone <group-url>`; xem `CLAUDE.md`.
 

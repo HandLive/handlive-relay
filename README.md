@@ -2,7 +2,7 @@ English | [Tiếng Việt](README.vi.md)
 
 # handlive-relay
 
-The HandLive cloud relay carries traffic between devices that are not on the same local network. It is zero-knowledge: it only forwards end-to-end encrypted data, never decrypts it and never logs content — logs carry only path, status, size and error code.
+The HandLive cloud relay carries traffic between devices that are not on the same local network. The relay never reads content. It only forwards end-to-end encrypted data, never decrypts it and never logs content. Logs carry only path, status, size and error code.
 
 Rust, actix-web 4, sqlx/PostgreSQL 16, Redis 7. The relay has no user interface and sends no user-facing text: errors are codes, and devices localize them (detailed design 0.12).
 
