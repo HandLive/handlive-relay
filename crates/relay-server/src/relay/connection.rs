@@ -118,9 +118,15 @@ impl Conn {
             conn_id: self.conn_id,
         };
         let instance = &state.settings.instance_id;
+        // Presence first: an older connection on another instance that is
+        // told to close then finds the presence taken and stays silent.
         let setup = async {
-            state.hub.publish(&self.device_id, &replace).await?;
-            presence::claim(&state.redis, &self.device_id, instance).await
+            presence::claim(&state.redis, &self.device_id, instance).await?;
+            state
+                .hub
+                .publish(&self.device_id, &replace)
+                .await
+                .map(|_| ())
         };
         if let Err(e) = setup.await {
             log::warn!("relay connection setup failed: {e}");
