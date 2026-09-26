@@ -53,7 +53,7 @@ async fn apns_alerts_carry_the_spec_headers_and_payload() {
     let gateway = PushGateway::new(&config).unwrap();
     assert_eq!(gateway.apns_topic(), Some(TOPIC));
 
-    let sms = alert("aa01", Reason::SmsNew, Some("sms:sms:12847"), false);
+    let sms = alert("aa01", Reason::SmsNew, Some("sms:12847"), false);
     assert_eq!(gateway.alert(&sms).await, Outcome::Sent);
     let call = alert("aa02", Reason::CallIncoming, Some("call:0192f4b2"), false);
     assert_eq!(gateway.alert(&call).await, Outcome::Sent);
@@ -68,7 +68,7 @@ async fn apns_alerts_carry_the_spec_headers_and_payload() {
     assert_eq!(first.headers["apns-push-type"], "alert");
     assert_eq!(first.headers["apns-priority"], "10");
     assert_eq!(first.headers["apns-topic"], TOPIC);
-    assert_eq!(first.headers["apns-collapse-id"], "sms:sms:12847");
+    assert_eq!(first.headers["apns-collapse-id"], "sms:12847");
     let expiration: u64 = first.headers["apns-expiration"].parse().unwrap();
     assert!(expiration.abs_diff(now_s() + 86_400) <= 5, "{expiration}");
     assert_eq!(

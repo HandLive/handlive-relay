@@ -119,5 +119,5 @@ fn push_vector_requests_pass_the_route_checks() {
         assert_eq!(push.env_b64, v["env_b64"].as_str());
         seen += 1;
     }
-    assert!(seen >= 3);
+    assert!(seen >= 8, "push requests in the vectors: {seen}");
 }

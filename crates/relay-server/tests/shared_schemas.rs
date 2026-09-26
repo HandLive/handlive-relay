@@ -1,6 +1,7 @@
 //! Every REST body, relay control message and push body the relay emits in a
 //! typical session, validated against the shared JSON Schemas
-//! (`shared/schemas`: `relay-rest`, `relay-*`, `relay-wrapper`, `push`).
+//! (`shared/schemas`: `relay-rest`, `relay-*`, `relay-wrapper`, `push`),
+//! the APNs payloads of SMS and call pushes included.
 //! The requests the tests send as devices are validated too, so the tests
 //! speak the contract they check.
 //!
@@ -148,18 +149,7 @@ async fn relay_output_matches_the_shared_schemas() {
         schemas.check("relay-rest#push-response", &resp);
         if push["kind"] == "alert" {
             let (_, _, payload) = providers.apns.last();
-            if push["reason"] == "sms_new" {
-                // The relay cannot know the conversation (it is encrypted):
-                // the only difference from the schema is the generic group.
-                let left = schemas.errors("push#apns-payload", &payload);
-                assert_eq!(payload["aps"]["thread-id"], "sms");
-                assert!(
-                    !left.is_empty() && left.iter().all(|e| e.starts_with("/aps/thread-id")),
-                    "{left:#?}"
-                );
-            } else {
-                schemas.check("push#apns-payload", &payload);
-            }
+            schemas.check("push#apns-payload", &payload);
         }
     }
     let (_, _, fcm_body) = providers.fcm.last();

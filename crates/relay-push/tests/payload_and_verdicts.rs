@@ -15,7 +15,7 @@ fn pair() -> Uuid {
 #[test]
 fn apns_payload_matches_conn04_and_carries_no_text() {
     let env = "eyJ2IjoxLCJ0eXBlIjoic21zIiwiaWQiOiIwMTky";
-    // The CONN-04 API 4 example, with thread-id "sms" (see payload.rs).
+    // The CONN-04 API 4 example (generic thread-id, logic 3).
     assert_eq!(
         apns_payload(Reason::SmsNew, &pair(), env).unwrap(),
         json!({"aps":{"alert":{"loc-key":"push.sms_new"},"mutable-content":1,"sound":"default",

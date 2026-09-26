@@ -59,7 +59,7 @@ async fn paired(app: &impl TestService, android: &Member, client: &Member) -> Uu
 
 fn alert(pair_id: Uuid, to: Uuid, env: &str) -> Value {
     json!({"pair_id": pair_id, "to": to, "kind": "alert", "reason": "sms_new",
-           "env_b64": env, "collapse_key": "sms:sms:12847", "ttl_s": 86400})
+           "env_b64": env, "collapse_key": "sms:12847", "ttl_s": 86400})
 }
 
 fn wake(pair_id: Uuid, to: Uuid, reason: &str) -> Value {
@@ -106,7 +106,7 @@ async fn alerts_and_wakes_reach_the_providers() {
     );
     let (path, headers, payload) = providers.apns.last();
     assert_eq!(path, format!("/3/device/{apns_token}"));
-    assert!(headers.contains(&("apns-collapse-id".to_owned(), "sms:sms:12847".to_owned())));
+    assert!(headers.contains(&("apns-collapse-id".to_owned(), "sms:12847".to_owned())));
     assert!(headers.contains(&("apns-topic".to_owned(), TOPIC.to_owned())));
     assert_eq!(payload["aps"]["alert"], json!({"loc-key": "push.sms_new"}));
     assert_eq!(

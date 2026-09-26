@@ -1,12 +1,7 @@
 //! The APNs requests the relay sends for the `POST /v1/push` bodies of
-//! `shared/test-vectors/push-envelope.json`: headers and payload as the
-//! vectors give them.
-//!
-//! One difference is expected: for `sms_new` the vectors put
-//! `thread-id` = `sms:<thread_id>`, a value that exists only inside the
-//! encrypted envelope. The relay cannot read it and sends the generic group
-//! `sms` (I-NSE sets the conversation thread after decrypting); see the
-//! R2.2 report.
+//! `shared/test-vectors/push-envelope.json` (SMS pushes, a call, and the SMS
+//! text-cut cases): headers, expiration and payload exactly as the vectors
+//! give them, including the generic `thread-id` (CONN-04 API 4 logic 3).
 
 mod common;
 
@@ -14,6 +9,13 @@ use common::{TOPIC, TempDir, apns_config, apns_mock, ec_key};
 use relay_push::{Alert, Outcome, PushConfig, PushGateway, Reason};
 use serde_json::Value;
 use uuid::Uuid;
+
+fn now_s() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
+}
 
 fn vectors() -> Value {
     let path = format!(
@@ -64,16 +66,13 @@ async fn apns_requests_match_the_push_vectors() {
                 "{name}"
             );
         }
-        let mut expected: Value =
-            serde_json::from_str(v["apns_payload"].as_str().unwrap()).unwrap();
-        if reason == Reason::SmsNew {
-            let thread = expected["aps"]["thread-id"].as_str().unwrap();
-            assert!(thread.starts_with("sms:"), "{thread}");
-            expected["aps"]["thread-id"] = Value::from("sms");
-        }
+        let expiration: u64 = seen.headers["apns-expiration"].parse().unwrap();
+        let wanted = now_s() + req["ttl_s"].as_u64().unwrap();
+        assert!(expiration.abs_diff(wanted) <= 5, "{}", v["name"]);
+        let expected: Value = serde_json::from_str(v["apns_payload"].as_str().unwrap()).unwrap();
         assert_eq!(seen.body, expected, "{}", v["name"]);
         sent += 1;
     }
-    assert!(sent >= 3);
+    assert!(sent >= 8, "push requests in the vectors: {sent}");
     apns.stop().await;
 }
