@@ -138,12 +138,12 @@ async fn unpaired_offline_and_malformed_frames_get_errors() {
     mac_ws.send_json(&json!({"to": a, "env": [1, 2]})).await;
     assert_eq!(
         without_message(mac_ws.recv_json().await),
-        error("BAD_REQUEST", Some(&a))
+        error("BAD_REQUEST", None)
     );
     mac_ws.send_json(&json!({"to": a})).await;
     assert_eq!(
         without_message(mac_ws.recv_json().await),
-        error("BAD_REQUEST", Some(&a))
+        error("BAD_REQUEST", None)
     );
     mac_ws.send_json(&json!({"op": "subscribe"})).await;
     assert_eq!(

@@ -41,7 +41,8 @@ impl Conn {
                     };
                     self.forward(to, bus, text.len()).await
                 }
-                (to, _) => self.send_error(RelayError::BadRequest, to.as_ref()).await,
+                // A malformed wrapper never echoes its `to` (CONN-03 API 6 logic 1).
+                _ => self.send_error(RelayError::BadRequest, None).await,
             },
         }
     }
