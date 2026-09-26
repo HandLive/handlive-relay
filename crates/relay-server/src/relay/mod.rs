@@ -4,6 +4,10 @@
 
 pub mod bandwidth;
 pub mod bus;
+pub mod connection;
+pub mod hub;
+mod inbound;
+mod outbound;
 pub mod presence;
 pub mod rendezvous;
 pub mod wire;

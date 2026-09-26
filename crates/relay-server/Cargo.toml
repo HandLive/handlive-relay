@@ -8,6 +8,8 @@ publish.workspace = true
 
 [dependencies]
 actix-web.workspace = true
+actix-ws.workspace = true
+futures-util.workspace = true
 sqlx.workspace = true
 redis.workspace = true
 jsonwebtoken.workspace = true

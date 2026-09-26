@@ -1,6 +1,7 @@
-//! HandLive cloud relay (Phase 0 scope): device registration, challenge/JWT
-//! authentication and the PostgreSQL schema. Zero-knowledge: never decrypts
-//! or logs payloads (spec 0.4.3, 0.6.5).
+//! HandLive cloud relay: device registration and challenge/JWT
+//! authentication, attested pairs, the `/v1/relay` WebSocket channel with
+//! routing across instances through Redis, and minimal usage statistics.
+//! Zero-knowledge: never decrypts or logs payloads (spec 0.4.3, 0.6.5).
 
 pub mod attestation;
 pub mod auth_extractor;
@@ -11,11 +12,13 @@ pub mod config;
 pub mod device_identity;
 pub mod error;
 pub mod jwt;
+pub mod limits;
 pub mod relay;
 pub mod routes;
 pub mod signatures;
 pub mod state;
 pub mod store;
+pub mod usage;
 
 use actix_web::web;
 
@@ -25,12 +28,14 @@ pub const MAX_JSON_BODY_BYTES: usize = 4 * 1024;
 /// Embedded migrations from `relay/migrations`.
 pub static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("../../migrations");
 
-/// Register JSON limits/error mapping and all routes on an app.
+/// Register JSON/query/path error mapping and all routes on an app.
 pub fn configure(cfg: &mut web::ServiceConfig) {
-    cfg.app_data(
-        web::JsonConfig::default()
-            .limit(MAX_JSON_BODY_BYTES)
-            .error_handler(error::json_error_handler),
-    )
-    .configure(routes::configure);
+    cfg.app_data(routes::json_config(MAX_JSON_BODY_BYTES))
+        .app_data(
+            web::QueryConfig::default().error_handler(|_, _| error::ApiError::BadRequest.into()),
+        )
+        .app_data(
+            web::PathConfig::default().error_handler(|_, _| error::ApiError::BadRequest.into()),
+        )
+        .configure(routes::configure);
 }
