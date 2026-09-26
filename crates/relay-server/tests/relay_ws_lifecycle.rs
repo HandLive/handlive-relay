@@ -19,6 +19,7 @@ use relay_server::clock::now_ms;
 use relay_server::jwt::JwtKeys;
 use relay_server::relay::presence::{presence_key, revoked_notice_key};
 use serde_json::json;
+use tokio_tungstenite::tungstenite::Message;
 
 #[actix_web::test]
 #[ignore = "needs PostgreSQL + Redis (docker compose)"]
@@ -314,5 +315,57 @@ async fn deleting_all_data_revokes_pairs_now_and_on_reconnect() {
     )
     .await;
     assert_eq!(status, StatusCode::NO_CONTENT);
+    relay.stop().await;
+}
+
+#[actix_web::test]
+#[ignore = "needs PostgreSQL + Redis (docker compose)"]
+async fn a_receiver_that_stops_reading_is_dropped() {
+    let mut settings = test_settings();
+    settings.write_timeout = Duration::from_millis(300);
+    settings.max_queued_bytes = 2 * 1024 * 1024;
+    settings.pair_bandwidth_bytes_per_sec = 1024 * 1024 * 1024;
+    let relay = Relay::start(settings).await;
+    let app = rest!(relay);
+    let android = enroll(&app, "android").await;
+    let mac = enroll(&app, "macos").await;
+    let pair_id = pair(&app, &android, &mac).await;
+    let mut android_ws = connect(&relay, &android).await;
+    assert_eq!(
+        android_ws.recv_json().await,
+        presence(pair_id, mac.id(), false)
+    );
+    // The Mac completes the upgrade, then never reads again.
+    let _mac = silent_connect(&relay, &mac.token).await;
+    relay.wait_present(&mac.id()).await;
+    assert_eq!(
+        android_ws.recv_json().await,
+        presence(pair_id, mac.id(), true)
+    );
+
+    // Socket buffers fill, then the stuck write or the queue limit drops the
+    // Mac's connection (4500): its presence goes and the phone is told.
+    let frame =
+        json!({"to": mac.id(), "env": envelope("clipboard", &"A".repeat(200 * 1024))}).to_string();
+    let offline = presence(pair_id, mac.id(), false);
+    let mut dropped = false;
+    for _ in 0..200 {
+        android_ws.send_text(frame.clone()).await;
+        while let Some(Message::Text(t)) = android_ws.next(Duration::from_millis(20)).await {
+            let v: serde_json::Value = serde_json::from_str(&t).unwrap();
+            if v == offline {
+                dropped = true;
+            } else {
+                assert_eq!(v["code"], "NOT_CONNECTED", "{v}");
+            }
+        }
+        if dropped {
+            break;
+        }
+    }
+    assert!(dropped, "the stalled receiver was never dropped");
+    let mut redis = relay.state.redis.clone();
+    let present: bool = redis.exists(presence_key(&mac.id())).await.unwrap();
+    assert!(!present);
     relay.stop().await;
 }
