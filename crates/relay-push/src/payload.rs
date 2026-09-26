@@ -17,9 +17,10 @@ pub const FCM_WAKE_TTL_S: u32 = 60;
 /// (CONN-04 API 4 table). Only alert reasons have one.
 pub fn apns_presentation(reason: Reason) -> Option<(&'static str, &'static str, &'static str)> {
     match reason {
-        // The SMS conversation id is inside the encrypted envelope; I-NSE
-        // sets `sms:<thread_id>` once it has decrypted it. Until then (a
-        // locked iPhone) generic SMS notifications share one group.
+        // Generic groups (CONN-04 API 4 logic 3): the conversation is inside
+        // the encrypted envelope; I-NSE sets the notification's
+        // `threadIdentifier` after decrypting (SMS-02 API 4), and a locked
+        // iPhone keeps every SMS push in the `sms` group.
         Reason::SmsNew => Some(("push.sms_new", "active", "sms")),
         Reason::CallIncoming => Some(("push.call_incoming", "time-sensitive", "calls")),
         Reason::CallMissed => Some(("push.call_missed", "active", "calls")),
