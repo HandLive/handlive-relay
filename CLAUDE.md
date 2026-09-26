@@ -1,6 +1,6 @@
 # CLAUDE.md — handlive-relay
 
-Zero-knowledge cloud relay of HandLive (Rust, actix-web 4, actix-ws, sqlx/PostgreSQL 16, Redis 7). One part of the HandLive **workspace**: the hub repository `handlive` is this directory's parent, holds the documents that are the contract for all code, and its `CLAUDE.md` applies here in full.
+Cloud relay of HandLive (Rust, actix-web 4, actix-ws, sqlx/PostgreSQL 16, Redis 7) for devices that are not on the same network. It never reads content: it only forwards end-to-end encrypted data (zero-knowledge). One part of the HandLive **workspace**: the hub repository `handlive` is this directory's parent, holds the specification that all code implements, and its `CLAUDE.md` applies here in full.
 
 ## Workspace layout (mandatory)
 
