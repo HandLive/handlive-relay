@@ -34,7 +34,7 @@ Every JWT endpoint checks that the device still exists (404 `DEVICE_NOT_FOUND`, 
 
 - `wake` → FCM HTTP v1 to the Android phone: a high-priority data message `{t: "wake", p: <pair_id>, r: <reason>}`, TTL at most 60 s, no content. OAuth2 access token from the service-account key, reused until five minutes before it expires.
 - `alert` → APNs over HTTP/2 to the iPhone/iPad: `apns-push-type: alert`, `apns-priority: 10`, `apns-expiration`, `apns-collapse-id`, `apns-topic`; the payload has only `aps.alert.loc-key` (`push.sms_new`, `push.call_incoming`, `push.call_missed`), `mutable-content`, `sound`, `thread-id` (`sms` or `calls`), `interruption-level`, plus `p` (pair_id) and `hl` (the envelope encrypted with `K_push`, not kept). The relay sends no display text. The ES256 provider token is renewed every 50 minutes.
-- The target must be the other member of a valid pair (403), have a token (409 `PUSH_TOKEN_MISSING`); a wake with the same reason within 5 minutes answers 202 without a second send; a token the provider reports dead is deleted (409); provider errors answer 502 `PUSH_PROVIDER_ERROR` after one retry of 500/503 or network errors. Queuing and retrying failed pushes until their deadline is the phone's `push_outbox` (spec 0.9.1).
+- `ttl_s` defaults to 60 s for a wake, 30 s for an incoming call and 86,400 s for a new SMS or a missed call (0–86,400 accepted). The target must be the other member of a valid pair (403), have a token (409 `PUSH_TOKEN_MISSING`); a wake with the same reason within 5 minutes answers 202 without a second send; a token the provider reports dead is deleted (409); provider errors answer 502 `PUSH_PROVIDER_ERROR` after one retry of 500/503 or network errors. Queuing and retrying failed pushes until their deadline is the phone's `push_outbox` (spec 0.9.1).
 
 ### The relay channel `/v1/relay`
 
@@ -102,7 +102,7 @@ Load test from one machine (`../shared/tools/bench/relay_load.py`): start the re
 | `RELAY_APNS_KEY_PATH` | Path of the APNs `.p8` provider key (outside the repository). APNs is enabled when this and the next three are set |
 | `RELAY_APNS_KEY_ID` | Key id of the `.p8` key (JWT `kid`) |
 | `RELAY_APNS_TEAM_ID` | Apple team id (JWT `iss`) |
-| `RELAY_APNS_TOPIC` | Bundle id of the iOS app (`app.handlive.ios`); push tokens must name it |
+| `RELAY_APNS_TOPIC` | Bundle id of the iOS app (`app.handlive.ios`); APNs push tokens must name exactly this topic, so without APNs configured the relay stores no APNs token (400) |
 | `RELAY_APNS_URL`, `RELAY_APNS_SANDBOX_URL` | Optional APNs endpoints, default `https://api.push.apple.com` and `https://api.sandbox.push.apple.com` (`apns_sandbox` tokens) |
 | `RELAY_FCM_PROJECT_ID` | Firebase project id. FCM is enabled when this and the next are set |
 | `RELAY_FCM_SERVICE_ACCOUNT_PATH` | Path of the Google service-account JSON (`client_email`, `private_key`, `token_uri`), outside the repository |

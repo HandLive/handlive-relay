@@ -31,7 +31,7 @@ Mọi endpoint dùng JWT đều kiểm thiết bị còn tồn tại (404 `DEVIC
 
 - `wake` → FCM HTTP v1 tới điện thoại Android: tin dữ liệu ưu tiên cao `{t: "wake", p: <pair_id>, r: <reason>}`, TTL tối đa 60 s, không có nội dung. Token truy cập OAuth2 lấy bằng khóa service account, dùng lại tới năm phút trước khi hết hạn.
 - `alert` → APNs qua HTTP/2 tới iPhone/iPad: `apns-push-type: alert`, `apns-priority: 10`, `apns-expiration`, `apns-collapse-id`, `apns-topic`; payload chỉ có `aps.alert.loc-key` (`push.sms_new`, `push.call_incoming`, `push.call_missed`), `mutable-content`, `sound`, `thread-id` (`sms` hoặc `calls`), `interruption-level`, cùng `p` (pair_id) và `hl` (envelope mã hóa bằng `K_push`, không lưu lại). Relay không gửi câu chữ hiển thị. Token nhà cung cấp ES256 được làm mới mỗi 50 phút.
-- Thiết bị đích phải là thành viên còn lại của một cặp hợp lệ (403) và có token (409 `PUSH_TOKEN_MISSING`); `wake` cùng lý do trong 5 phút trả 202 mà không gửi lần nữa; token bị nhà cung cấp báo hỏng thì bị xóa (409); lỗi nhà cung cấp trả 502 `PUSH_PROVIDER_ERROR` sau một lần thử lại khi gặp 500/503 hoặc lỗi mạng. Việc xếp hàng và thử lại push lỗi tới hạn chót là việc của `push_outbox` trên điện thoại (đặc tả 0.9.1).
+- `ttl_s` mặc định 60 s cho `wake`, 30 s cho cuộc gọi đến và 86.400 s cho SMS mới hoặc cuộc gọi nhỡ (nhận 0–86.400). Thiết bị đích phải là thành viên còn lại của một cặp hợp lệ (403) và có token (409 `PUSH_TOKEN_MISSING`); `wake` cùng lý do trong 5 phút trả 202 mà không gửi lần nữa; token bị nhà cung cấp báo hỏng thì bị xóa (409); lỗi nhà cung cấp trả 502 `PUSH_PROVIDER_ERROR` sau một lần thử lại khi gặp 500/503 hoặc lỗi mạng. Việc xếp hàng và thử lại push lỗi tới hạn chót là việc của `push_outbox` trên điện thoại (đặc tả 0.9.1).
 
 ### Kênh relay `/v1/relay`
 
@@ -98,7 +98,7 @@ Kiểm thử tải trên một máy (`../shared/tools/bench/relay_load.py`): ch�
 | `RELAY_APNS_KEY_PATH` | Đường dẫn khóa nhà cung cấp APNs `.p8` (nằm ngoài kho). APNs bật khi biến này và ba biến sau đều được đặt |
 | `RELAY_APNS_KEY_ID` | Mã khóa của khóa `.p8` (`kid` của JWT) |
 | `RELAY_APNS_TEAM_ID` | Mã nhóm Apple (`iss` của JWT) |
-| `RELAY_APNS_TOPIC` | Bundle id của ứng dụng iOS (`app.handlive.ios`); token push phải ghi đúng giá trị này |
+| `RELAY_APNS_TOPIC` | Bundle id của ứng dụng iOS (`app.handlive.ios`); token push APNs phải ghi đúng topic này, nên khi chưa cấu hình APNs thì relay không lưu token APNs nào (400) |
 | `RELAY_APNS_URL`, `RELAY_APNS_SANDBOX_URL` | Tùy chọn: endpoint APNs, mặc định `https://api.push.apple.com` và `https://api.sandbox.push.apple.com` (token `apns_sandbox`) |
 | `RELAY_FCM_PROJECT_ID` | Mã dự án Firebase. FCM bật khi biến này và biến sau đều được đặt |
 | `RELAY_FCM_SERVICE_ACCOUNT_PATH` | Đường dẫn file JSON service account của Google (`client_email`, `private_key`, `token_uri`), nằm ngoài kho |
