@@ -22,9 +22,16 @@ Kho này là một phần của workspace HandLive: kho hub `handlive` (tài li�
 | POST | `/v1/pairs` | JWT | PAIR-01 API 8 (attestation + hai chữ ký) |
 | GET | `/v1/pairs[?include_revoked=<bool>]` | JWT | PAIR-02 API 1 |
 | POST | `/v1/pairs/{pair_id}/revoke` | JWT | PAIR-03 API 3 |
+| POST | `/v1/push` | JWT | CONN-04 API 2–4 (đánh thức qua FCM, cảnh báo qua APNs) |
 | GET (WebSocket) | `/v1/relay` | JWT | CONN-03 API 4–6, PAIR-01 API 7, PAIR-03 API 4 |
 
-Mọi endpoint dùng JWT đều kiểm thiết bị còn tồn tại (404 `DEVICE_NOT_FOUND`, 410 `DEVICE_REVOKED`) và tính vào giới hạn 60 lời gọi mỗi phút cho mỗi thiết bị (429 kèm `Retry-After`).
+Mọi endpoint dùng JWT đều kiểm thiết bị còn tồn tại (404 `DEVICE_NOT_FOUND`, 410 `DEVICE_REVOKED`) và tính vào giới hạn 60 lời gọi mỗi phút cho mỗi thiết bị (429 kèm `Retry-After`); `POST /v1/push` có giới hạn riêng 30 lần mỗi phút cho mỗi thiết bị gửi.
+
+### Push (`crates/relay-push`)
+
+- `wake` → FCM HTTP v1 tới điện thoại Android: tin dữ liệu ưu tiên cao `{t: "wake", p: <pair_id>, r: <reason>}`, TTL tối đa 60 s, không có nội dung. Token truy cập OAuth2 lấy bằng khóa service account, dùng lại tới năm phút trước khi hết hạn.
+- `alert` → APNs qua HTTP/2 tới iPhone/iPad: `apns-push-type: alert`, `apns-priority: 10`, `apns-expiration`, `apns-collapse-id`, `apns-topic`; payload chỉ có `aps.alert.loc-key` (`push.sms_new`, `push.call_incoming`, `push.call_missed`), `mutable-content`, `sound`, `thread-id` (`sms` hoặc `calls`), `interruption-level`, cùng `p` (pair_id) và `hl` (envelope mã hóa bằng `K_push`, không lưu lại). Relay không gửi câu chữ hiển thị. Token nhà cung cấp ES256 được làm mới mỗi 50 phút.
+- Thiết bị đích phải là thành viên còn lại của một cặp hợp lệ (403) và có token (409 `PUSH_TOKEN_MISSING`); `wake` cùng lý do trong 5 phút trả 202 mà không gửi lần nữa; token bị nhà cung cấp báo hỏng thì bị xóa (409); lỗi nhà cung cấp trả 502 `PUSH_PROVIDER_ERROR` sau một lần thử lại khi gặp 500/503 hoặc lỗi mạng. Việc xếp hàng và thử lại push lỗi tới hạn chót là việc của `push_outbox` trên điện thoại (đặc tả 0.9.1).
 
 ### Kênh relay `/v1/relay`
 
@@ -43,6 +50,7 @@ relay/
   .env.example            giá trị giữ chỗ cho dev; chép thành .env (gitignore)
   migrations/             migration sqlx, chạy khi server khởi động
   crates/relay-server/    server (lib + bin); tests/ chứa mọi test
+  crates/relay-push/      proxy push: APNs (HTTP/2, token .p8) và FCM (HTTP v1, OAuth2)
     src/routes/           handler REST và phần nâng cấp /v1/relay
     src/relay/            kênh relay: định dạng khung, bus và hub Redis,
                           presence, điểm hẹn, băng thông, tác vụ kết nối
@@ -73,7 +81,9 @@ cargo run -p relay-server                 # chạy migration, lắng nghe ở RE
 docker compose down -v                    # dừng và xóa volume dev
 ```
 
-`tests/relay_redis_restart.rs` xóa sạch cơ sở dữ liệu Redis; chỉ chạy test tích hợp với Redis dev, mỗi lần một file test (mặc định của `cargo test`).
+`tests/relay_redis_restart.rs` xóa sạch cơ sở dữ liệu Redis; chỉ chạy test tích hợp với Redis dev, mỗi lần một file test (mặc định của `cargo test`). Test push dùng máy chủ APNs/FCM giả chạy cục bộ và khóa sinh ra mỗi lần chạy; không cần thông tin xác thực thật.
+
+Kiểm thử tải trên một máy (`../shared/tools/bench/relay_load.py`): chạy relay với `RELAY_TRUSTED_PROXIES=127.0.0.1`; script gửi mỗi thiết bị giả một địa chỉ `X-Forwarded-For`, nên giới hạn 10 đăng ký mới mỗi giờ áp cho từng địa chỉ giả thay vì cho 127.0.0.1.
 
 ## Cấu hình
 
@@ -85,7 +95,17 @@ docker compose down -v                    # dừng và xóa volume dev
 | `RELAY_BIND` | Địa chỉ lắng nghe, mặc định `127.0.0.1:8080` |
 | `RELAY_INSTANCE_ID` | Tùy chọn: tên instance ghi vào `presence:<device_id>`; mặc định một UUID ngẫu nhiên mỗi lần khởi động |
 | `RELAY_TRUSTED_PROXIES` | Tùy chọn: danh sách IP (phân tách bằng dấu phẩy) của reverse proxy được tin `X-Forwarded-For` cho giới hạn đăng ký theo IP; không đặt thì dùng địa chỉ TCP của bên kết nối |
+| `RELAY_APNS_KEY_PATH` | Đường dẫn khóa nhà cung cấp APNs `.p8` (nằm ngoài kho). APNs bật khi biến này và ba biến sau đều được đặt |
+| `RELAY_APNS_KEY_ID` | Mã khóa của khóa `.p8` (`kid` của JWT) |
+| `RELAY_APNS_TEAM_ID` | Mã nhóm Apple (`iss` của JWT) |
+| `RELAY_APNS_TOPIC` | Bundle id của ứng dụng iOS (`app.handlive.ios`); token push phải ghi đúng giá trị này |
+| `RELAY_APNS_URL`, `RELAY_APNS_SANDBOX_URL` | Tùy chọn: endpoint APNs, mặc định `https://api.push.apple.com` và `https://api.sandbox.push.apple.com` (token `apns_sandbox`) |
+| `RELAY_FCM_PROJECT_ID` | Mã dự án Firebase. FCM bật khi biến này và biến sau đều được đặt |
+| `RELAY_FCM_SERVICE_ACCOUNT_PATH` | Đường dẫn file JSON service account của Google (`client_email`, `private_key`, `token_uri`), nằm ngoài kho |
+| `RELAY_FCM_URL` | Tùy chọn: endpoint FCM, mặc định `https://fcm.googleapis.com` |
 | `RUST_LOG` | Bộ lọc log, mặc định `info` |
+
+Khóa được đọc từ file khi khởi động; bộ biến APNs hoặc FCM thiếu một phần, hoặc khóa không đọc được, sẽ khiến relay dừng. Không có nhà cung cấp nào thì push loại đó trả 502. Không bao giờ commit khóa, file service account hay `.env`.
 
 ## Giấy phép
 
