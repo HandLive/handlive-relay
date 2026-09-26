@@ -2,6 +2,7 @@
 //! authentication and the PostgreSQL schema. Zero-knowledge: never decrypts
 //! or logs payloads (spec 0.4.3, 0.6.5).
 
+pub mod attestation;
 pub mod auth_extractor;
 pub mod b64u;
 pub mod challenge;

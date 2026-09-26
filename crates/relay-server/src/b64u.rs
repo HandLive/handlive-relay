@@ -22,3 +22,8 @@ pub fn decode_fixed<const N: usize>(text: &str) -> Option<[u8; N]> {
 pub fn decode_field<const N: usize>(text: &str) -> Result<[u8; N], ApiError> {
     decode_fixed(text).ok_or(ApiError::BadRequest)
 }
+
+/// Decode a b64u field of any length; `None` when it is not valid b64u.
+pub fn decode(text: &str) -> Option<Vec<u8>> {
+    URL_SAFE_NO_PAD.decode(text).ok()
+}
