@@ -11,6 +11,7 @@ pub mod config;
 pub mod device_identity;
 pub mod error;
 pub mod jwt;
+pub mod relay;
 pub mod routes;
 pub mod signatures;
 pub mod state;
