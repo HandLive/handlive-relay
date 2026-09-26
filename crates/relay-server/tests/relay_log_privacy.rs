@@ -1,8 +1,9 @@
-//! Zero-knowledge logging (spec 0.5.1 rule 5, 0.6.5, CONN-03 API 6 logic 4):
-//! every log record written while the relay registers, pairs, forwards
-//! both frame kinds, runs a rendezvous, refuses frames and removes a device
-//! is captured, and none may carry envelope content, identifiers, tokens or
-//! query strings. Access-log lines must still be there (path and status).
+//! Zero-knowledge logging (spec 0.5.1 rule 5, 0.6.5, CONN-03 API 6 logic 4,
+//! CONN-04 API 2 logic 4): every log record written while the relay
+//! registers, pairs, forwards both frame kinds, runs a rendezvous, refuses
+//! frames, removes a device and sends or fails pushes is captured, and none
+//! may carry envelope content, identifiers, tokens or query strings.
+//! Access-log lines must still be there (path and status).
 //!
 //! One test in its own binary: it installs the process-wide logger.
 //! Ignored by default; needs PostgreSQL + Redis (see relay/README.md).
@@ -14,8 +15,15 @@ use std::sync::Mutex;
 use actix_web::App;
 use actix_web::http::StatusCode;
 use actix_web::middleware::Compat;
+use actix_web::web;
+use base64::Engine;
+use base64::engine::general_purpose::STANDARD;
+use common::http_harness::TEST_JWT_SECRET;
+use common::push_mocks;
 use common::relay_harness::{Relay, call, connect, enroll, pair, presence, test_settings};
 use log::{LevelFilter, Log, Metadata, Record};
+use relay_server::config::Config;
+use relay_server::state::AppState;
 use relay_server::{access_log, configure};
 use serde_json::json;
 use uuid::Uuid;
@@ -132,6 +140,61 @@ async fn relay_logs_carry_no_content_or_identifiers() {
     mac_ws.expect_close().await;
     android_ws.recv_json().await;
     relay.stop().await;
+
+    // Pushes through mock providers: sent, refused by APNs, dead FCM token.
+    let providers = push_mocks::start().await;
+    let config = Config {
+        database_url: std::env::var("DATABASE_URL").unwrap(),
+        redis_url: std::env::var("REDIS_URL").unwrap(),
+        jwt_secret: TEST_JWT_SECRET.as_bytes().to_vec(),
+        bind: String::new(),
+        settings: test_settings(),
+        push: providers.config.clone(),
+    };
+    let push_state = web::Data::new(AppState::connect(&config).await.unwrap());
+    let push_app = actix_web::test::init_service(
+        App::new()
+            .app_data(push_state.clone())
+            .wrap(Compat::new(access_log()))
+            .configure(configure),
+    )
+    .await;
+    let phone = enroll(&push_app, "android").await;
+    let ipad = enroll(&push_app, "ipados").await;
+    let push_pair = pair(&push_app, &phone, &ipad).await;
+    let env_b64 = STANDARD.encode(format!("{{\"payload\":\"{marker}\"}}"));
+    for token in [
+        hex_marker.clone(),
+        format!("bad0{}", Uuid::new_v4().simple()),
+    ] {
+        let body = json!({"provider": "apns", "token": token, "topic": push_mocks::TOPIC});
+        call(
+            &push_app,
+            "PUT",
+            "/v1/devices/me/push-token",
+            &ipad.token,
+            Some(&body),
+        )
+        .await;
+        let alert = json!({"pair_id": push_pair, "to": ipad.id(), "kind": "alert",
+            "reason": "sms_new", "env_b64": env_b64, "collapse_key": format!("sms:{}", 7)});
+        call(&push_app, "POST", "/v1/push", &phone.token, Some(&alert)).await;
+    }
+    let body = json!({"provider": "fcm", "token": "gone"});
+    call(
+        &push_app,
+        "PUT",
+        "/v1/devices/me/push-token",
+        &phone.token,
+        Some(&body),
+    )
+    .await;
+    let wake =
+        json!({"pair_id": push_pair, "to": phone.id(), "kind": "wake", "reason": "user_open"});
+    let (status, _) = call(&push_app, "POST", "/v1/push", &ipad.token, Some(&wake)).await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert_eq!(providers.apns.count(), 2);
+    providers.stop().await;
     tokio::time::sleep(std::time::Duration::from_millis(200)).await;
 
     let lines = CAPTURE.0.lock().unwrap().clone();
@@ -143,10 +206,13 @@ async fn relay_logs_carry_no_content_or_identifiers() {
         android.token.clone(),
         mac.token.clone(),
         iphone.token.clone(),
+        phone.token.clone(),
+        ipad.token.clone(),
+        env_b64.clone(),
     ]
     .into_iter()
     .chain(
-        [&android, &mac, &iphone, &stranger]
+        [&android, &mac, &iphone, &stranger, &phone, &ipad]
             .iter()
             .flat_map(|m| [m.id().to_string(), m.id().simple().to_string()]),
     )
