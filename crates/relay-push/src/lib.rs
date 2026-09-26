@@ -7,6 +7,7 @@
 
 pub mod apns;
 pub mod config;
+pub mod fcm;
 mod http;
 pub mod payload;
 
@@ -108,4 +109,49 @@ pub struct Alert<'a> {
     pub env_b64: &'a str,
     pub collapse_key: Option<&'a str>,
     pub ttl_s: u32,
+}
+
+/// The configured providers.
+pub struct PushGateway {
+    apns: Option<apns::ApnsClient>,
+    fcm: Option<fcm::FcmClient>,
+}
+
+impl PushGateway {
+    /// Load the keys named by the configuration; fails on unreadable keys.
+    pub fn new(config: &PushConfig) -> Result<Self, String> {
+        Ok(Self {
+            apns: config
+                .apns
+                .as_ref()
+                .map(apns::ApnsClient::new)
+                .transpose()?,
+            fcm: config.fcm.as_ref().map(fcm::FcmClient::new).transpose()?,
+        })
+    }
+
+    /// The APNs topic push tokens must name, when APNs is configured.
+    pub fn apns_topic(&self) -> Option<&str> {
+        self.apns.as_ref().map(apns::ApnsClient::topic)
+    }
+
+    pub async fn wake(&self, push: &Wake<'_>) -> Outcome {
+        match &self.fcm {
+            Some(fcm) => fcm.send(push).await,
+            None => {
+                log::warn!("wake push dropped: FCM is not configured");
+                Outcome::Failed
+            }
+        }
+    }
+
+    pub async fn alert(&self, push: &Alert<'_>) -> Outcome {
+        match &self.apns {
+            Some(apns) => apns.send(push).await,
+            None => {
+                log::warn!("alert push dropped: APNs is not configured");
+                Outcome::Failed
+            }
+        }
+    }
 }

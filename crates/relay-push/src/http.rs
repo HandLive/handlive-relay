@@ -22,3 +22,9 @@ pub fn apns_client() -> Result<reqwest::Client, String> {
         .build()
         .map_err(|e| format!("apns http client: {e}"))
 }
+
+pub fn fcm_client() -> Result<reqwest::Client, String> {
+    builder()
+        .build()
+        .map_err(|e| format!("fcm http client: {e}"))
+}
