@@ -23,8 +23,6 @@ use crate::relay::{presence, wire};
 use crate::state::AppState;
 use crate::store::pairs;
 
-/// A write to a device that takes longer than this ends the connection.
-const WRITE_TIMEOUT: Duration = Duration::from_secs(10);
 /// Least time between two peer reloads caused by an unknown peer.
 const MISS_RELOAD_GAP: Duration = Duration::from_secs(1);
 
@@ -203,10 +201,9 @@ impl Conn {
                 _ = ping.tick() => {
                     if last_rx.elapsed() >= settings.idle_timeout {
                         Some(End::Close(CLOSE_IDLE))
-                    } else if self.session.ping(b"").await.is_err() {
-                        Some(End::Gone)
                     } else {
-                        None
+                        let timeout = settings.write_timeout;
+                        written(tokio::time::timeout(timeout, self.session.ping(b"")).await).err()
                     }
                 },
                 _ = refresh.tick() => self.refresh_presence().await,
@@ -222,7 +219,8 @@ impl Conn {
             AggregatedMessage::Text(text) => self.handle_text(&text).await,
             AggregatedMessage::Binary(bytes) => self.handle_binary(&bytes).await,
             AggregatedMessage::Ping(bytes) => {
-                self.session.pong(&bytes).await.err().map(|_| End::Gone)
+                let timeout = self.state.settings.write_timeout;
+                written(tokio::time::timeout(timeout, self.session.pong(&bytes)).await).err()
             }
             AggregatedMessage::Pong(_) => None,
             AggregatedMessage::Close(_) => Some(End::ClientClosed),
@@ -298,18 +296,14 @@ impl Conn {
         }
     }
 
-    pub(super) async fn send_text(&mut self, text: String) -> Result<(), ()> {
-        match tokio::time::timeout(WRITE_TIMEOUT, self.session.text(text)).await {
-            Ok(Ok(())) => Ok(()),
-            _ => Err(()),
-        }
+    pub(super) async fn send_text(&mut self, text: String) -> Result<(), End> {
+        let timeout = self.state.settings.write_timeout;
+        written(tokio::time::timeout(timeout, self.session.text(text)).await)
     }
 
-    pub(super) async fn send_binary(&mut self, bytes: Vec<u8>) -> Result<(), ()> {
-        match tokio::time::timeout(WRITE_TIMEOUT, self.session.binary(bytes)).await {
-            Ok(Ok(())) => Ok(()),
-            _ => Err(()),
-        }
+    pub(super) async fn send_binary(&mut self, bytes: Vec<u8>) -> Result<(), End> {
+        let timeout = self.state.settings.write_timeout;
+        written(tokio::time::timeout(timeout, self.session.binary(bytes)).await)
     }
 
     /// Send the relay `error` op; a failed write ends the connection.
@@ -318,10 +312,7 @@ impl Conn {
         err: wire::RelayError,
         to: Option<&Uuid>,
     ) -> Option<End> {
-        self.send_text(wire::error_message(err, to))
-            .await
-            .err()
-            .map(|_| End::Gone)
+        self.send_text(wire::error_message(err, to)).await.err()
     }
 
     /// Leave the registry, drop presence if it is still ours and tell the
@@ -348,6 +339,20 @@ impl Conn {
             code: CloseCode::Normal,
             description: None,
         }));
-        let _ = tokio::time::timeout(WRITE_TIMEOUT, self.session.close(reason)).await;
+        let timeout = state.settings.write_timeout;
+        let _ = tokio::time::timeout(timeout, self.session.close(reason)).await;
+    }
+}
+
+/// The outcome of a bounded write: the device is gone when the session is
+/// closed; a write stuck past the timeout drops the connection with 4500
+/// (CONN-03 API 4 logic 6).
+fn written(
+    result: Result<Result<(), actix_ws::Closed>, tokio::time::error::Elapsed>,
+) -> Result<(), End> {
+    match result {
+        Ok(Ok(())) => Ok(()),
+        Ok(Err(_)) => Err(End::Gone),
+        Err(_) => Err(End::Close(CLOSE_INTERNAL)),
     }
 }

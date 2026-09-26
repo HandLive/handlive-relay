@@ -121,12 +121,11 @@ impl Conn {
         };
         let (newly, members) = joined;
         let peer_present = members.len() == 2;
-        if self
+        if let Err(end) = self
             .send_text(wire::rv_joined_message(&rv_id, peer_present))
             .await
-            .is_err()
         {
-            return Some(End::Gone);
+            return Some(end);
         }
         if peer_present && newly {
             let text = wire::rv_joined_message(&rv_id, true);

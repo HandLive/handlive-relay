@@ -44,11 +44,11 @@ impl Conn {
             BusMessage::Replace { .. } => Ok(()),
             BusMessage::Close { code } => return Some(End::Close(code)),
         };
-        written.err().map(|_| End::Gone)
+        written.err()
     }
 
     /// Reload the pairs and send `presence` for each pair that appeared.
-    async fn pairs_changed(&mut self) -> Result<(), ()> {
+    async fn pairs_changed(&mut self) -> Result<(), End> {
         let before: HashSet<Uuid> = self.pairs.iter().map(|(pair_id, _)| *pair_id).collect();
         if !self.reload_peers().await {
             return Ok(());

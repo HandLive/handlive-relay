@@ -62,6 +62,8 @@ pub struct RelaySettings {
     pub usage_flush_interval: Duration,
     /// Bytes waiting for a slow receiver before its connection is dropped.
     pub max_queued_bytes: usize,
+    /// A write to a device stuck this long drops the connection (4500).
+    pub write_timeout: Duration,
 }
 
 impl Default for RelaySettings {
@@ -76,6 +78,7 @@ impl Default for RelaySettings {
             pair_bandwidth_bytes_per_sec: 2 * 1024 * 1024,
             usage_flush_interval: Duration::from_secs(60),
             max_queued_bytes: 32 * 1024 * 1024,
+            write_timeout: Duration::from_secs(10),
         }
     }
 }

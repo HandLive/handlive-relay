@@ -56,6 +56,9 @@ fn settings_defaults_are_the_spec_values() {
     assert_eq!(s.ping_interval.as_secs(), 15);
     assert_eq!(s.pair_bandwidth_bytes_per_sec, 2 * 1024 * 1024);
     assert_eq!(s.usage_flush_interval.as_secs(), 60);
+    assert_eq!(s.idle_timeout.as_secs(), 45);
+    assert_eq!(s.max_queued_bytes, 32 * 1024 * 1024);
+    assert_eq!(s.write_timeout.as_secs(), 10);
     assert_ne!(s.instance_id, RelaySettings::default().instance_id);
     assert_eq!(
         parse_ip_list(" 10.0.0.2, ::1 ,").unwrap(),
