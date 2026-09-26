@@ -30,4 +30,5 @@ actix-http.workspace = true
 hex.workspace = true
 tokio-tungstenite.workspace = true
 tokio = { workspace = true, features = ["net", "io-util"] }
+rsa = { workspace = true, features = ["getrandom"] }
 futures-util = { workspace = true, features = ["sink"] }
