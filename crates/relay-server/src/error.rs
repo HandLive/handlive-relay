@@ -21,8 +21,14 @@ pub enum ApiError {
     SignatureInvalid,
     /// 401 — JWT past its `exp`.
     TokenExpired,
+    /// 403 — the two devices are not in the same valid pair.
+    NotPaired,
     /// 404 — device not registered (or removed itself from the relay).
     DeviceNotFound,
+    /// 409 — `pair_id` already exists with different data.
+    PairExists,
+    /// 409 — the push target has no push token.
+    PushTokenMissing,
     /// 410 — device row exists but is revoked.
     DeviceRevoked,
     /// 413 — body over the configured limit.
@@ -31,6 +37,8 @@ pub enum ApiError {
     RateLimited { retry_after_secs: u64 },
     /// 500 — unexpected failure (database, Redis). Code from spec 0.8.1.
     Internal,
+    /// 502 — FCM/APNs returned an error or is not configured.
+    PushProviderError,
 }
 
 impl ApiError {
@@ -40,11 +48,15 @@ impl ApiError {
             Self::ChallengeExpired => "CHALLENGE_EXPIRED",
             Self::SignatureInvalid => "SIGNATURE_INVALID",
             Self::TokenExpired => "TOKEN_EXPIRED",
+            Self::NotPaired => "NOT_PAIRED",
             Self::DeviceNotFound => "DEVICE_NOT_FOUND",
+            Self::PairExists => "PAIR_EXISTS",
+            Self::PushTokenMissing => "PUSH_TOKEN_MISSING",
             Self::DeviceRevoked => "DEVICE_REVOKED",
             Self::PayloadTooLarge => "PAYLOAD_TOO_LARGE",
             Self::RateLimited { .. } => "RATE_LIMITED",
             Self::Internal => "INTERNAL",
+            Self::PushProviderError => "PUSH_PROVIDER_ERROR",
         }
     }
 
@@ -54,11 +66,15 @@ impl ApiError {
             Self::ChallengeExpired => "Challenge expired or already used",
             Self::SignatureInvalid => "Invalid signature or credentials",
             Self::TokenExpired => "Access token expired",
+            Self::NotPaired => "Devices are not in the same valid pair",
             Self::DeviceNotFound => "Device not registered",
+            Self::PairExists => "Pair already exists with different data",
+            Self::PushTokenMissing => "Target device has no push token",
             Self::DeviceRevoked => "Device has been removed",
             Self::PayloadTooLarge => "Request body too large",
             Self::RateLimited { .. } => "Too many requests",
             Self::Internal => "Internal error",
+            Self::PushProviderError => "Push provider error",
         }
     }
 
@@ -82,11 +98,14 @@ impl ResponseError for ApiError {
             Self::ChallengeExpired | Self::SignatureInvalid | Self::TokenExpired => {
                 StatusCode::UNAUTHORIZED
             }
+            Self::NotPaired => StatusCode::FORBIDDEN,
             Self::DeviceNotFound => StatusCode::NOT_FOUND,
+            Self::PairExists | Self::PushTokenMissing => StatusCode::CONFLICT,
             Self::DeviceRevoked => StatusCode::GONE,
             Self::PayloadTooLarge => StatusCode::PAYLOAD_TOO_LARGE,
             Self::RateLimited { .. } => StatusCode::TOO_MANY_REQUESTS,
             Self::Internal => StatusCode::INTERNAL_SERVER_ERROR,
+            Self::PushProviderError => StatusCode::BAD_GATEWAY,
         }
     }
 
