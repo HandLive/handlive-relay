@@ -206,7 +206,16 @@ async fn relay_output_matches_the_shared_schemas() {
     schemas.check("relay-rest#pair-revoke-request", &revoke);
     let (status, _) = call(&app, "POST", &path, &android.token, Some(&revoke)).await;
     assert_eq!(status, StatusCode::NO_CONTENT);
-    control.push(mac_ws.recv_json().await);
+    // Frames sent to the Mac through the bus may arrive after this point on
+    // a loaded host: collect until the revocation shows up.
+    loop {
+        let msg = mac_ws.recv_json().await;
+        let done = msg["op"] == "pair_revoked";
+        control.push(msg);
+        if done {
+            break;
+        }
+    }
 
     let mut ops = std::collections::BTreeSet::new();
     for msg in &control {
