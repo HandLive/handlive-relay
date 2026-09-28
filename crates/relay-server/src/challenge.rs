@@ -1,6 +1,7 @@
 //! Auth challenge rules (spec 0.6.4 step 1, CONN-03 API 2–3).
 //!
-//! Storage lives in Redis (`chal:<device_id>`, TTL 60 s, read with GETDEL);
+//! Storage lives in Redis (`chal:<device_id>:<challenge>`, TTL 60 s, read
+//! with GETDEL);
 //! this module holds the pure rules so they are testable without Redis.
 
 use ring::rand::{SecureRandom, SystemRandom};
@@ -11,8 +12,6 @@ use crate::error::ApiError;
 
 /// `CHALLENGE_TTL` (spec 0.10).
 pub const CHALLENGE_TTL_SECS: u64 = 60;
-/// Challenge requests allowed per device per minute (CONN-03 API 2).
-pub const CHALLENGE_RATE_PER_MINUTE: u64 = 10;
 
 /// Fresh 32-byte random challenge.
 pub fn generate(rng: &SystemRandom) -> Result<[u8; 32], ApiError> {

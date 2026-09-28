@@ -1,38 +1,48 @@
-//! Redis keys for auth (spec 0.9.4): `chal:<device_id>` (TTL 60 s) and
-//! `rl:<device_id>:<group>:<minute>` (TTL 120 s).
+//! Redis keys for auth (spec 0.9.4): `chal:<device_id>:<challenge>` (TTL
+//! 60 s, one key per pending challenge) and `rl:…:<minute>` counters (TTL
+//! 120 s).
 
 use redis::AsyncCommands;
 use redis::aio::ConnectionManager;
 use uuid::Uuid;
 
+use crate::b64u;
 use crate::challenge::CHALLENGE_TTL_SECS;
 
 const RATE_LIMIT_TTL_SECS: i64 = 120;
 
-pub fn challenge_key(device_id: &Uuid) -> String {
-    format!("chal:{}", device_id.hyphenated())
+/// `chal:<device_id>:<challenge b64u>`.
+pub fn challenge_key(device_id: &Uuid, challenge: &[u8; 32]) -> String {
+    format!(
+        "chal:{}:{}",
+        device_id.hyphenated(),
+        b64u::encode(challenge)
+    )
 }
 
 pub fn rate_limit_key(device_id: &Uuid, group: &str, minute: i64) -> String {
     format!("rl:{}:{group}:{minute}", device_id.hyphenated())
 }
 
-/// Store (overwriting any previous) challenge as b64u text with TTL 60 s.
+/// Store one pending challenge (its b64u text as the value) with TTL 60 s.
+/// Other pending challenges of the device stay valid.
 pub async fn put(
     conn: &mut ConnectionManager,
     device_id: &Uuid,
-    challenge_b64u: &str,
+    challenge: &[u8; 32],
 ) -> redis::RedisResult<()> {
-    conn.set_ex(challenge_key(device_id), challenge_b64u, CHALLENGE_TTL_SECS)
+    let key = challenge_key(device_id, challenge);
+    conn.set_ex(key, b64u::encode(challenge), CHALLENGE_TTL_SECS)
         .await
 }
 
-/// Atomically read and delete the pending challenge (GETDEL).
+/// Atomically read and delete one pending challenge (GETDEL).
 pub async fn take(
     conn: &mut ConnectionManager,
     device_id: &Uuid,
+    challenge: &[u8; 32],
 ) -> redis::RedisResult<Option<String>> {
-    conn.get_del(challenge_key(device_id)).await
+    conn.get_del(challenge_key(device_id, challenge)).await
 }
 
 /// Increment a fixed-window counter and return its new value.

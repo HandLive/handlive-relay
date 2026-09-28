@@ -4,8 +4,11 @@
 use std::net::IpAddr;
 
 use relay_server::config::{RelaySettings, parse_ip_list};
-use relay_server::limits::{client_ip, registration_key};
+use relay_server::limits::{
+    auth_ip_key, challenge_quota_key, client_ip, ip_bucket, registration_key,
+};
 use relay_server::maintenance::cleanup_lock_key;
+use relay_server::store::challenges::challenge_key;
 use relay_server::usage::{Usage, device_hash, salt_key, year_month};
 use uuid::Uuid;
 
@@ -74,8 +77,47 @@ fn redis_key_forms() {
         "rl:ip:203.0.113.7:reg:480000"
     );
     // 2026-09-26T00:00:00Z = 1790380800000 ms, UTC day 20722.
+    assert_eq!(
+        auth_ip_key(&ip("203.0.113.7"), 28_800_000),
+        "rl:ip:203.0.113.7:auth:28800000"
+    );
+    assert_eq!(
+        auth_ip_key(&ip("2001:db8:1:2:ffff:1:2:3"), 28_800_000),
+        "rl:ip:2001:db8:1:2::/64:auth:28800000"
+    );
+    let device = Uuid::parse_str("5b1f8c2e-9a4d-8e6f-a1b2-c3d4e5f60718").unwrap();
+    assert_eq!(
+        challenge_quota_key(&device, Some(&ip("2001:db8::9")), 28_800_000),
+        "rl:5b1f8c2e-9a4d-8e6f-a1b2-c3d4e5f60718:2001:db8::/64:chal:28800000"
+    );
+    assert_eq!(
+        challenge_quota_key(&device, None, 1),
+        "rl:5b1f8c2e-9a4d-8e6f-a1b2-c3d4e5f60718:unknown:chal:1"
+    );
+    // One key per pending challenge.
+    assert_eq!(
+        challenge_key(&device, &[0u8; 32]),
+        "chal:5b1f8c2e-9a4d-8e6f-a1b2-c3d4e5f60718:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+    );
     assert_eq!(cleanup_lock_key(1_790_380_800_000), "maintenance:20722");
     assert_eq!(salt_key(1_790_380_800_000), "usage_salt:2026-09");
+}
+
+#[test]
+fn ipv6_clients_are_bucketed_per_64() {
+    assert_eq!(ip_bucket(&ip("198.51.100.4")), "198.51.100.4");
+    assert_eq!(ip_bucket(&ip("2001:db8:a:b:c:d:e:f")), "2001:db8:a:b::/64");
+    assert_eq!(
+        ip_bucket(&ip("2001:db8:a:b::1")),
+        ip_bucket(&ip("2001:db8:a:b:ffff:ffff:ffff:ffff"))
+    );
+    assert_ne!(
+        ip_bucket(&ip("2001:db8:a:b::1")),
+        ip_bucket(&ip("2001:db8:a:c::1"))
+    );
+    // An IPv4-mapped IPv6 address is the IPv4 client.
+    assert_eq!(ip_bucket(&ip("::ffff:198.51.100.4")), "198.51.100.4");
+    assert_eq!(ip_bucket(&ip("::1")), "::/64");
 }
 
 #[test]

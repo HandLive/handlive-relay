@@ -21,7 +21,6 @@ use crate::relay::presence;
 use crate::routes::pairs::notify;
 use crate::signatures::{registration_message, verify_device_signature};
 use crate::state::AppState;
-use crate::store::challenges::challenge_key;
 use crate::store::devices::{self, NewDevice, UpsertOutcome};
 
 /// Maximum clock skew between the device `ts` and the relay (5 minutes).
@@ -242,11 +241,11 @@ pub async fn delete_me(
         }
     }
     // Presence goes first, so the closing connection finds nothing of its own
-    // to release and announces no "offline" to the peers.
+    // to release and announces no "offline" to the peers. Pending challenges
+    // expire by themselves: `/v1/auth/token` finds no device row.
     let mut redis = state.redis.clone();
     let cleared: redis::RedisResult<()> = redis::cmd("DEL")
         .arg(presence::presence_key(&device_id))
-        .arg(challenge_key(&device_id))
         .query_async(&mut redis)
         .await;
     if let Err(e) = cleared {

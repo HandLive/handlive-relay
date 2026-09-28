@@ -1,8 +1,10 @@
 //! Fixed-window rate limits in Redis (spec 0.9.4 `rl:` keys, 0.10
-//! `RELAY_RATE_LIMIT`) and the client IP used by the registration limit.
+//! `RELAY_RATE_LIMIT`, `RELAY_AUTH_LIMIT`, `RELAY_REG_IP_LIMIT`) and the
+//! client IP the per-IP limits count.
 
 use std::net::IpAddr;
 
+use actix_web::HttpRequest;
 use redis::aio::ConnectionManager;
 use uuid::Uuid;
 
@@ -15,6 +17,11 @@ use crate::store::challenges::{incr_window, rate_limit_key};
 pub const REST_PER_MINUTE: u64 = 60;
 /// `POST /v1/push` calls per sending device per minute (`RELAY_RATE_LIMIT`).
 pub const PUSH_PER_MINUTE: u64 = 30;
+/// `/v1/auth/challenge` + `/v1/auth/token` calls per client IP per minute
+/// (`RELAY_AUTH_LIMIT`).
+pub const AUTH_PER_IP_PER_MINUTE: u64 = 30;
+/// Challenges per (`device_id`, client IP) per minute (`RELAY_AUTH_LIMIT`).
+pub const CHALLENGES_PER_DEVICE_IP_PER_MINUTE: u64 = 10;
 /// Rate-limit group names inside `rl:<device_id>:<group>:<minute>`.
 pub const GROUP_REST: &str = "rest";
 pub const GROUP_PUSH: &str = "push";
@@ -30,18 +37,81 @@ pub async fn check_device(
     group: &str,
     limit: u64,
 ) -> Result<(), ApiError> {
-    let now = now_ms();
-    let key = rate_limit_key(device_id, group, minute_window(now));
-    let mut conn = redis.clone();
-    let count = incr_window(&mut conn, &key)
-        .await
-        .map_err(|e| ApiError::internal("rate limit", e))?;
-    rate_limit_decision(count, limit, now)
+    let key = rate_limit_key(device_id, group, minute_window(now_ms()));
+    count_minute(redis, &key, limit).await
+}
+
+/// What a per-IP limit counts: the IPv4 address, or the /64 prefix of an
+/// IPv6 address (one subscriber usually holds a whole /64). An IPv4-mapped
+/// IPv6 address counts as its IPv4 address.
+pub fn ip_bucket(ip: &IpAddr) -> String {
+    match ip.to_canonical() {
+        IpAddr::V4(v4) => v4.to_string(),
+        IpAddr::V6(v6) => {
+            let mut octets = v6.octets();
+            octets[8..].fill(0);
+            format!("{}/64", std::net::Ipv6Addr::from(octets))
+        }
+    }
 }
 
 /// `rl:ip:<ip>:reg:<hour>` (TTL 3,600 s).
 pub fn registration_key(ip: &IpAddr, hour: i64) -> String {
     format!("rl:ip:{ip}:reg:{hour}")
+}
+
+/// `rl:ip:<ip>:auth:<minute>` (TTL 120 s).
+pub fn auth_ip_key(ip: &IpAddr, minute: i64) -> String {
+    format!("rl:ip:{}:auth:{minute}", ip_bucket(ip))
+}
+
+/// `rl:<device_id>:<ip>:chal:<minute>` (TTL 120 s). Without a known client
+/// address (only in-process tests) the IP part is `unknown`.
+pub fn challenge_quota_key(device_id: &Uuid, ip: Option<&IpAddr>, minute: i64) -> String {
+    let bucket = ip.map_or_else(|| "unknown".to_owned(), ip_bucket);
+    format!("rl:{}:{bucket}:chal:{minute}", device_id.hyphenated())
+}
+
+/// Count one call to `/v1/auth/challenge` or `/v1/auth/token` from `ip`;
+/// 429 once the minute's 30 are used. Runs before any database lookup.
+pub async fn check_auth_ip(redis: &ConnectionManager, ip: Option<&IpAddr>) -> Result<(), ApiError> {
+    let Some(ip) = ip else {
+        return Ok(());
+    };
+    count_minute(
+        redis,
+        &auth_ip_key(ip, minute_window(now_ms())),
+        AUTH_PER_IP_PER_MINUTE,
+    )
+    .await
+}
+
+/// Count one challenge for (`device_id`, client IP); 429 over 10 a minute.
+pub async fn check_challenge_quota(
+    redis: &ConnectionManager,
+    device_id: &Uuid,
+    ip: Option<&IpAddr>,
+) -> Result<(), ApiError> {
+    let key = challenge_quota_key(device_id, ip, minute_window(now_ms()));
+    count_minute(redis, &key, CHALLENGES_PER_DEVICE_IP_PER_MINUTE).await
+}
+
+async fn count_minute(redis: &ConnectionManager, key: &str, limit: u64) -> Result<(), ApiError> {
+    let now = now_ms();
+    let mut conn = redis.clone();
+    let count = incr_window(&mut conn, key)
+        .await
+        .map_err(|e| ApiError::internal("rate limit", e))?;
+    rate_limit_decision(count, limit, now)
+}
+
+/// The client address of a request (see [`client_ip`]).
+pub fn request_ip(http: &HttpRequest, trusted: &[IpAddr]) -> Option<IpAddr> {
+    let forwarded = http
+        .headers()
+        .get("x-forwarded-for")
+        .and_then(|v| v.to_str().ok());
+    client_ip(http.peer_addr().map(|a| a.ip()), forwarded, trusted)
 }
 
 /// Count one new registration from `ip`; 429 once more than `limit` new

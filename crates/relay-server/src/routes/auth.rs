@@ -1,15 +1,16 @@
 //! `POST /v1/auth/challenge` and `POST /v1/auth/token`
 //! (spec 0.6.4, CONN-03 API 2–3).
 
-use actix_web::{HttpResponse, web};
+use actix_web::{HttpRequest, HttpResponse, web};
 use serde::Deserialize;
 use serde_json::json;
 use uuid::Uuid;
 
 use crate::b64u;
-use crate::challenge::{self, CHALLENGE_RATE_PER_MINUTE, CHALLENGE_TTL_SECS};
+use crate::challenge::{self, CHALLENGE_TTL_SECS};
 use crate::clock::now_ms;
 use crate::error::ApiError;
+use crate::limits;
 use crate::signatures::{auth_message, verify_device_signature};
 use crate::state::AppState;
 use crate::store::challenges;
@@ -52,42 +53,51 @@ pub fn check_token_proof(
     verify_device_signature(&req.device_id, &ik_sig_pub, &msg, sig)
 }
 
+/// `POST /v1/auth/challenge`: the per-IP limit first (no database work for a
+/// flooding client), then the (`device_id`, IP) quota, then the device. Each
+/// challenge gets its own key, so asking for more never locks a device out.
 pub async fn challenge(
     state: web::Data<AppState>,
+    http: HttpRequest,
     body: web::Json<ChallengeRequest>,
 ) -> Result<HttpResponse, ApiError> {
+    let ip = limits::request_ip(&http, &state.settings.trusted_proxies);
+    limits::check_auth_ip(&state.redis, ip.as_ref()).await?;
     let device_id = body.device_id;
+    limits::check_challenge_quota(&state.redis, &device_id, ip.as_ref()).await?;
     let found = devices::find_key(&state.db, device_id)
         .await
         .map_err(|e| ApiError::internal("devices lookup", e))?;
     usable_key(found)?;
 
     let now = now_ms();
+    let challenge = challenge::generate(&state.rng)?;
     let mut redis = state.redis.clone();
-    let key = challenges::rate_limit_key(&device_id, "chal", challenge::minute_window(now));
-    let count = challenges::incr_window(&mut redis, &key)
-        .await
-        .map_err(|e| ApiError::internal("rate limit", e))?;
-    challenge::rate_limit_decision(count, CHALLENGE_RATE_PER_MINUTE, now)?;
-
-    let value = b64u::encode(&challenge::generate(&state.rng)?);
-    challenges::put(&mut redis, &device_id, &value)
+    challenges::put(&mut redis, &device_id, &challenge)
         .await
         .map_err(|e| ApiError::internal("challenge store", e))?;
     Ok(HttpResponse::Ok().json(json!({
-        "challenge": value,
+        "challenge": b64u::encode(&challenge),
         "expires_at": now + (CHALLENGE_TTL_SECS as i64) * 1000,
     })))
 }
 
+/// `POST /v1/auth/token`: the per-IP limit of the challenge endpoint first,
+/// then the echoed challenge is consumed (GETDEL of its own key).
 pub async fn token(
     state: web::Data<AppState>,
+    http: HttpRequest,
     body: web::Json<TokenRequest>,
 ) -> Result<HttpResponse, ApiError> {
+    let ip = limits::request_ip(&http, &state.settings.trusted_proxies);
+    limits::check_auth_ip(&state.redis, ip.as_ref()).await?;
     let req = body.into_inner();
     let sig: [u8; 64] = b64u::decode_field(&req.sig)?;
+    // A malformed challenge was never issued.
+    let presented: [u8; 32] =
+        b64u::decode_fixed(&req.challenge).ok_or(ApiError::ChallengeExpired)?;
     let mut redis = state.redis.clone();
-    let stored = challenges::take(&mut redis, &req.device_id)
+    let stored = challenges::take(&mut redis, &req.device_id, &presented)
         .await
         .map_err(|e| ApiError::internal("challenge take", e))?;
     // Missing challenge short-circuits before touching the database.
