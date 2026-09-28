@@ -2,7 +2,7 @@
 //! and `relay/README.md`). Secrets are never read from files in the repository.
 
 use std::env;
-use std::net::{IpAddr, SocketAddr};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::time::Duration;
 
 use relay_push::PushConfig;
@@ -26,9 +26,12 @@ impl Config {
             }
             settings.instance_id = id.trim().to_owned();
         }
-        if let Ok(list) = env::var("RELAY_TRUSTED_PROXIES") {
-            settings.trusted_proxies = parse_ip_list(&list)?;
-        }
+        let bind = env::var("RELAY_BIND").unwrap_or_else(|_| "127.0.0.1:8080".to_owned());
+        let configured = match env::var("RELAY_TRUSTED_PROXIES") {
+            Ok(list) => parse_ip_list(&list)?,
+            Err(_) => Vec::new(),
+        };
+        settings.trusted_proxies = effective_trusted_proxies(&bind, configured);
         if let Ok(cap) = env::var("RELAY_MAX_REGISTRATIONS_PER_HOUR") {
             settings.max_registrations_per_hour = cap.trim().parse().map_err(|_| {
                 format!("RELAY_MAX_REGISTRATIONS_PER_HOUR: not a whole number: {cap}")
@@ -38,7 +41,7 @@ impl Config {
             database_url: required("DATABASE_URL")?,
             redis_url: required("REDIS_URL")?,
             jwt_secret: required("RELAY_JWT_SECRET")?.into_bytes(),
-            bind: env::var("RELAY_BIND").unwrap_or_else(|_| "127.0.0.1:8080".to_owned()),
+            bind,
             settings,
             push: PushConfig::from_env()?,
         })
@@ -106,26 +109,43 @@ pub fn parse_ip_list(list: &str) -> Result<Vec<IpAddr>, String> {
         .collect()
 }
 
-/// The startup warning of CONN-03 API 1 logic 4: behind a reverse proxy
-/// without `RELAY_TRUSTED_PROXIES` every client has the proxy's address, so
-/// the per-IP limits count all clients together. `None` when the relay binds
-/// a loopback address or trusts at least one proxy.
-pub fn proxy_warning(bind: &str, trusted: &[IpAddr]) -> Option<String> {
-    if !trusted.is_empty() {
-        return None;
-    }
-    let loopback = match bind.parse::<SocketAddr>() {
-        Ok(addr) => addr.ip().is_loopback(),
+/// Whether `bind` (`RELAY_BIND`) is a loopback address; `localhost:<port>`
+/// counts, any other host name does not.
+pub fn is_loopback_bind(bind: &str) -> bool {
+    match bind.parse::<SocketAddr>() {
+        Ok(addr) => addr.ip().to_canonical().is_loopback(),
         Err(_) => bind
             .rsplit_once(':')
             .is_some_and(|(host, _)| host.eq_ignore_ascii_case("localhost")),
-    };
-    (!loopback).then(|| {
-        format!(
-            "RELAY_TRUSTED_PROXIES is empty and the relay binds {bind}: the per-IP limits \
-             count the TCP peer, which is the proxy's address when a reverse proxy is in front"
-        )
-    })
+    }
+}
+
+/// The proxies whose `X-Forwarded-For` is believed (CONN-03 API 1 logic 4):
+/// the configured list, or, when it is empty and the relay binds a loopback
+/// address, `127.0.0.1` and `::1` — only a reverse proxy on the same host can
+/// reach such a relay.
+pub fn effective_trusted_proxies(bind: &str, configured: Vec<IpAddr>) -> Vec<IpAddr> {
+    if configured.is_empty() && is_loopback_bind(bind) {
+        return vec![
+            IpAddr::V4(Ipv4Addr::LOCALHOST),
+            IpAddr::V6(Ipv6Addr::LOCALHOST),
+        ];
+    }
+    configured
+}
+
+/// The startup warning of CONN-03 API 1 logic 4: behind a reverse proxy on
+/// another host without `RELAY_TRUSTED_PROXIES`, every client has the
+/// proxy's address, so the per-IP limits count all clients together. `None`
+/// when the relay binds a loopback address or trusts at least one proxy.
+pub fn proxy_warning(bind: &str, trusted: &[IpAddr]) -> Option<String> {
+    if !trusted.is_empty() || is_loopback_bind(bind) {
+        return None;
+    }
+    Some(format!(
+        "RELAY_TRUSTED_PROXIES is empty and the relay binds {bind}: the per-IP limits \
+         count the TCP peer, which is the proxy's address when a reverse proxy is in front"
+    ))
 }
 
 fn required(name: &str) -> Result<String, String> {

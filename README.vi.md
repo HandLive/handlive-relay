@@ -83,7 +83,7 @@ docker compose down -v                    # dừng và xóa volume dev
 
 `tests/relay_redis_restart.rs` xóa sạch cơ sở dữ liệu Redis; chỉ chạy test tích hợp với Redis dev, mỗi lần một file test (mặc định của `cargo test`). Test push dùng máy chủ APNs/FCM giả chạy cục bộ và khóa sinh ra mỗi lần chạy; không cần thông tin xác thực thật.
 
-Kiểm thử tải trên một máy (`../shared/tools/bench/relay_load.py`): chạy relay với `RELAY_TRUSTED_PROXIES=127.0.0.1`; script gửi mỗi thiết bị giả một địa chỉ `X-Forwarded-For`, nên giới hạn 10 đăng ký mới mỗi giờ áp cho từng địa chỉ giả thay vì cho 127.0.0.1. Đặt `RELAY_MAX_REGISTRATIONS_PER_HOUR` lớn hơn số thiết bị giả.
+Kiểm thử tải trên một máy (`../shared/tools/bench/relay_load.py`): chạy relay ở `RELAY_BIND` loopback (khi đó `127.0.0.1` được tin mặc định) hoặc với `RELAY_TRUSTED_PROXIES=127.0.0.1`; script gửi mỗi thiết bị giả một địa chỉ `X-Forwarded-For`, nên giới hạn 10 đăng ký mới mỗi giờ áp cho từng địa chỉ giả thay vì cho 127.0.0.1. Đặt `RELAY_MAX_REGISTRATIONS_PER_HOUR` lớn hơn số thiết bị giả.
 
 ## Cấu hình
 
@@ -94,7 +94,7 @@ Kiểm thử tải trên một máy (`../shared/tools/bench/relay_load.py`): ch�
 | `RELAY_JWT_SECRET` | Khóa HS256 cho JWT của thiết bị, ≥ 32 byte (`openssl rand -base64 48`). Không bao giờ commit |
 | `RELAY_BIND` | Địa chỉ lắng nghe, mặc định `127.0.0.1:8080` |
 | `RELAY_INSTANCE_ID` | Tùy chọn: tên instance ghi vào `presence:<device_id>`; mặc định một UUID ngẫu nhiên mỗi lần khởi động |
-| `RELAY_TRUSTED_PROXIES` | Tùy chọn: danh sách IP (phân tách bằng dấu phẩy) của reverse proxy được tin `X-Forwarded-For` cho các giới hạn theo IP (đăng ký, xác thực); không đặt thì dùng địa chỉ TCP của bên kết nối, và relay ghi cảnh báo khi khởi động nếu lắng nghe ở địa chỉ không phải loopback. Máy khách IPv6 được tính theo /64 |
+| `RELAY_TRUSTED_PROXIES` | Tùy chọn: danh sách IP (phân tách bằng dấu phẩy) của reverse proxy được tin `X-Forwarded-For` cho các giới hạn theo IP (đăng ký, xác thực); để trống và `RELAY_BIND` là địa chỉ loopback thì relay tin `127.0.0.1` và `::1` (reverse proxy cùng máy); để trống và lắng nghe ở địa chỉ không phải loopback thì dùng địa chỉ TCP của bên kết nối và relay ghi cảnh báo khi khởi động. Bên kết nối không được tin mà gửi `X-Forwarded-For` được ghi log tối đa mỗi phút một lần. Máy khách IPv6 được tính theo /64; IPv6 ánh xạ IPv4 được tính như IPv4 |
 | `RELAY_MAX_REGISTRATIONS_PER_HOUR` | Tùy chọn: số đăng ký thiết bị mới tối đa mỗi giờ trên toàn relay, mặc định 1000; vượt → 429 `RATE_LIMITED` |
 | `RELAY_APNS_KEY_PATH` | Đường dẫn khóa nhà cung cấp APNs `.p8` (nằm ngoài kho). APNs bật khi biến này và ba biến sau đều được đặt |
 | `RELAY_APNS_KEY_ID` | Mã khóa của khóa `.p8` (`kid` của JWT) |

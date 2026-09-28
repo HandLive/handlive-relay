@@ -3,6 +3,7 @@
 //! client IP the per-IP limits count.
 
 use std::net::IpAddr;
+use std::sync::atomic::{AtomicI64, Ordering};
 
 use actix_web::HttpRequest;
 use redis::aio::ConnectionManager;
@@ -110,13 +111,70 @@ async fn count_minute(redis: &ConnectionManager, key: &str, limit: u64) -> Resul
     rate_limit_decision(count, limit, now)
 }
 
-/// The client address of a request (see [`client_ip`]).
+/// The client address of a request (see [`client_ip`]). A peer that is not
+/// a trusted proxy but sends `X-Forwarded-For` is logged at most once a
+/// minute: it usually means `RELAY_TRUSTED_PROXIES` is missing.
 pub fn request_ip(http: &HttpRequest, trusted: &[IpAddr]) -> Option<IpAddr> {
+    static UNTRUSTED_XFF: OnceAMinute = OnceAMinute::new();
     let forwarded = http
         .headers()
         .get("x-forwarded-for")
         .and_then(|v| v.to_str().ok());
-    client_ip(http.peer_addr().map(|a| a.ip()), forwarded, trusted)
+    let peer = http.peer_addr().map(|a| a.ip());
+    if forwarded_for_ignored(peer, forwarded, trusted) && UNTRUSTED_XFF.due(now_ms()) {
+        // No address in the log (spec 0.6.5): only the hint.
+        log::warn!(
+            "X-Forwarded-For from a peer that is not a trusted proxy was ignored; \
+             set RELAY_TRUSTED_PROXIES to the reverse proxy's address"
+        );
+    }
+    client_ip(peer, forwarded, trusted)
+}
+
+/// A request whose `X-Forwarded-For` is ignored because its TCP peer is not
+/// a trusted proxy.
+pub fn forwarded_for_ignored(
+    peer: Option<IpAddr>,
+    forwarded_for: Option<&str>,
+    trusted: &[IpAddr],
+) -> bool {
+    let Some(peer) = peer else {
+        return false;
+    };
+    let peer = peer.to_canonical();
+    forwarded_for.is_some() && !trusted.iter().any(|t| t.to_canonical() == peer)
+}
+
+/// Lets an event through at most once per 60 s (lock-free).
+#[derive(Debug)]
+pub struct OnceAMinute {
+    last_ms: AtomicI64,
+}
+
+impl Default for OnceAMinute {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl OnceAMinute {
+    pub const fn new() -> Self {
+        Self {
+            last_ms: AtomicI64::new(i64::MIN),
+        }
+    }
+
+    /// `true` when the last event let through is at least a minute before
+    /// `now_ms`; records `now_ms` then.
+    pub fn due(&self, now_ms: i64) -> bool {
+        let last = self.last_ms.load(Ordering::Relaxed);
+        if last != i64::MIN && now_ms.saturating_sub(last) < 60_000 {
+            return false;
+        }
+        self.last_ms
+            .compare_exchange(last, now_ms, Ordering::Relaxed, Ordering::Relaxed)
+            .is_ok()
+    }
 }
 
 /// Count one new registration: first against `ip`'s hourly limit (when the

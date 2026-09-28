@@ -3,10 +3,12 @@
 
 use std::net::IpAddr;
 
-use relay_server::config::{RelaySettings, parse_ip_list, proxy_warning};
+use relay_server::config::{
+    RelaySettings, effective_trusted_proxies, parse_ip_list, proxy_warning,
+};
 use relay_server::limits::{
-    auth_ip_key, challenge_quota_key, client_ip, global_registration_key, ip_bucket,
-    registration_key,
+    OnceAMinute, auth_ip_key, challenge_quota_key, client_ip, forwarded_for_ignored,
+    global_registration_key, ip_bucket, registration_key,
 };
 use relay_server::maintenance::cleanup_lock_key;
 use relay_server::store::challenges::challenge_key;
@@ -129,6 +131,60 @@ fn startup_warns_about_a_public_bind_without_trusted_proxies() {
     ] {
         assert_eq!(proxy_warning(bind, &[]), None, "{bind}");
     }
+}
+
+#[test]
+fn a_loopback_relay_trusts_the_local_proxy_by_default() {
+    let local = vec![ip("127.0.0.1"), ip("::1")];
+    for bind in ["127.0.0.1:8080", "[::1]:8080", "localhost:8080"] {
+        assert_eq!(effective_trusted_proxies(bind, Vec::new()), local, "{bind}");
+        // An explicit list always wins.
+        assert_eq!(
+            effective_trusted_proxies(bind, vec![ip("10.0.0.2")]),
+            vec![ip("10.0.0.2")]
+        );
+    }
+    for bind in ["0.0.0.0:8080", "[::]:8080", "relay.example.com:8080"] {
+        assert!(
+            effective_trusted_proxies(bind, Vec::new()).is_empty(),
+            "{bind}"
+        );
+    }
+    // Behind nginx on the same host, the forwarded client counts.
+    let trusted = effective_trusted_proxies("127.0.0.1:8080", Vec::new());
+    assert_eq!(
+        client_ip(Some(ip("::ffff:127.0.0.1")), Some("203.0.113.9"), &trusted),
+        Some(ip("203.0.113.9"))
+    );
+}
+
+#[test]
+fn untrusted_forwarded_for_is_reported_at_most_once_a_minute() {
+    let trusted = [ip("10.0.0.2")];
+    assert!(forwarded_for_ignored(
+        Some(ip("203.0.113.7")),
+        Some("198.51.100.1"),
+        &trusted
+    ));
+    assert!(!forwarded_for_ignored(
+        Some(ip("203.0.113.7")),
+        None,
+        &trusted
+    ));
+    assert!(!forwarded_for_ignored(
+        Some(ip("::ffff:10.0.0.2")),
+        Some("198.51.100.1"),
+        &trusted
+    ));
+    assert!(!forwarded_for_ignored(None, Some("198.51.100.1"), &trusted));
+
+    let gate = OnceAMinute::default();
+    let t = 1_727_160_000_000_i64;
+    assert!(gate.due(t));
+    assert!(!gate.due(t + 1));
+    assert!(!gate.due(t + 59_999));
+    assert!(gate.due(t + 60_000));
+    assert!(!gate.due(t + 60_001));
 }
 
 #[test]

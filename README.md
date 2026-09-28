@@ -87,7 +87,7 @@ docker compose down -v                    # stop and drop the dev volume
 
 `tests/relay_redis_restart.rs` flushes the Redis database; run the integration tests against a dev Redis only, one test binary at a time (the default of `cargo test`). The push tests use local mock APNs/FCM servers and keys generated per run; no real credentials are needed.
 
-Load test from one machine (`../shared/tools/bench/relay_load.py`): start the relay with `RELAY_TRUSTED_PROXIES=127.0.0.1`; the script sends one `X-Forwarded-For` address per simulated device, so the limit of 10 new registrations per hour applies per simulated address instead of to 127.0.0.1. Set `RELAY_MAX_REGISTRATIONS_PER_HOUR` above the number of simulated devices.
+Load test from one machine (`../shared/tools/bench/relay_load.py`): start the relay on a loopback `RELAY_BIND` (`127.0.0.1` is then trusted by default) or with `RELAY_TRUSTED_PROXIES=127.0.0.1`; the script sends one `X-Forwarded-For` address per simulated device, so the limit of 10 new registrations per hour applies per simulated address instead of to 127.0.0.1. Set `RELAY_MAX_REGISTRATIONS_PER_HOUR` above the number of simulated devices.
 
 ## Configuration
 
@@ -98,7 +98,7 @@ Load test from one machine (`../shared/tools/bench/relay_load.py`): start the re
 | `RELAY_JWT_SECRET` | HS256 key for device JWTs, ≥ 32 bytes (`openssl rand -base64 48`). Never commit it |
 | `RELAY_BIND` | Listen address, default `127.0.0.1:8080` |
 | `RELAY_INSTANCE_ID` | Optional name of this instance in `presence:<device_id>`; default a random UUID per start |
-| `RELAY_TRUSTED_PROXIES` | Optional comma-separated IPs of reverse proxies whose `X-Forwarded-For` is believed for the per-IP limits (registration, auth); without it the TCP peer address counts, and the relay logs a warning at startup when it binds a non-loopback address. IPv6 clients count per /64 |
+| `RELAY_TRUSTED_PROXIES` | Optional comma-separated IPs of reverse proxies whose `X-Forwarded-For` is believed for the per-IP limits (registration, auth); when it is empty and `RELAY_BIND` is a loopback address, `127.0.0.1` and `::1` (a reverse proxy on the same host) are trusted; empty with a non-loopback bind, the TCP peer address counts and the relay logs a warning at startup. A peer that is not trusted but sends `X-Forwarded-For` is logged at most once a minute. IPv6 clients count per /64; IPv4-mapped IPv6 counts as IPv4 |
 | `RELAY_MAX_REGISTRATIONS_PER_HOUR` | Optional cap of new device registrations per hour on the whole relay, default 1000; over it → 429 `RATE_LIMITED` |
 | `RELAY_APNS_KEY_PATH` | Path of the APNs `.p8` provider key (outside the repository). APNs is enabled when this and the next three are set |
 | `RELAY_APNS_KEY_ID` | Key id of the `.p8` key (JWT `kid`) |
