@@ -177,9 +177,28 @@ impl OnceAMinute {
     }
 }
 
-/// Count one new registration: first against `ip`'s hourly limit (when the
-/// client address is known), then against the relay-wide hourly cap. 429
-/// with `Retry-After` until the hour ends once either is used up.
+/// Take one new registration when both the relay-wide hourly cap
+/// (`KEYS[1]`, `ARGV[1]`) and the client's hourly limit (`KEYS[2]` if given,
+/// `ARGV[2]`) have room; a refused request increments neither counter.
+/// Returns 0 when taken, 1 when a limit is used up.
+const REGISTRATION_SCRIPT: &str = r"
+for i, key in ipairs(KEYS) do
+  local used = tonumber(redis.call('GET', key) or '0')
+  if used >= tonumber(ARGV[i]) then
+    return 1
+  end
+end
+for _, key in ipairs(KEYS) do
+  redis.call('INCR', key)
+  redis.call('EXPIRE', key, ARGV[3])
+end
+return 0";
+
+/// Count one new registration against the relay-wide hourly cap and, when
+/// the client address is known, against its hourly limit. The cap is checked
+/// first and nothing is counted for a refused request, so a client refused
+/// by the cap keeps its own quota and one client refused by its limit uses
+/// up no relay-wide slot. 429 with `Retry-After` until the hour ends.
 pub async fn check_registration(
     redis: &ConnectionManager,
     ip: Option<&IpAddr>,
@@ -188,27 +207,26 @@ pub async fn check_registration(
 ) -> Result<(), ApiError> {
     let now = now_ms();
     let hour = now.div_euclid(HOUR_MS);
-    if let Some(ip) = ip {
-        count_hour(redis, &registration_key(ip, hour), per_ip_limit, now).await?;
-    }
-    count_hour(redis, &global_registration_key(hour), global_limit, now).await
-}
-
-async fn count_hour(
-    redis: &ConnectionManager,
-    key: &str,
-    limit: u64,
-    now: i64,
-) -> Result<(), ApiError> {
+    let mut cmd = redis::cmd("EVAL");
+    cmd.arg(REGISTRATION_SCRIPT);
+    match ip {
+        Some(ip) => cmd
+            .arg(2)
+            .arg(global_registration_key(hour))
+            .arg(registration_key(ip, hour)),
+        None => cmd.arg(1).arg(global_registration_key(hour)),
+    };
+    // Lua numbers are doubles: clamp so u64::MAX (no limit) stays exact enough.
+    let clamp = |n: u64| n.min(1 << 53);
+    cmd.arg(clamp(global_limit))
+        .arg(clamp(per_ip_limit))
+        .arg(HOUR_WINDOW_TTL_SECS);
     let mut conn = redis.clone();
-    let (count, _): (u64, bool) = redis::pipe()
-        .atomic()
-        .incr(key, 1)
-        .expire(key, HOUR_WINDOW_TTL_SECS)
+    let refused: i64 = cmd
         .query_async(&mut conn)
         .await
         .map_err(|e| ApiError::internal("registration limit", e))?;
-    if count <= limit {
+    if refused == 0 {
         return Ok(());
     }
     let into_hour_ms = now.rem_euclid(HOUR_MS) as u64;

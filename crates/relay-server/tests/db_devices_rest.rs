@@ -16,6 +16,7 @@ use common::relay_harness::{call, enroll, pair_body};
 use redis::AsyncCommands;
 use relay_server::clock::now_ms;
 use relay_server::config::{Config, RelaySettings};
+use relay_server::limits::registration_key;
 use relay_server::relay::presence::revoked_notice_key;
 use relay_server::state::AppState;
 use relay_server::{MIGRATOR, configure};
@@ -388,6 +389,16 @@ async fn new_registrations_are_capped_relay_wide() {
     .await;
     assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
     assert!((1..=3600).contains(&retry.unwrap()));
+    // The refused request did not use up the client's own quota.
+    let ip: std::net::IpAddr = format!("2001:db8:{n:x}:1::1").parse().unwrap();
+    let hour = now_ms().div_euclid(3_600_000);
+    let mut redis = full.redis.clone();
+    let mut used = 0;
+    for h in [hour - 1, hour] {
+        let n: Option<u64> = redis.get(registration_key(&ip, h)).await.unwrap();
+        used += n.unwrap_or(0);
+    }
+    assert_eq!(used, 0);
     // Refreshing a registered device does not count.
     let (status, _) = register_from(
         &app,
