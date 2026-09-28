@@ -15,6 +15,7 @@ pub mod jwt;
 pub mod limits;
 pub mod maintenance;
 pub mod relay;
+pub mod revocation;
 pub mod routes;
 pub mod signatures;
 pub mod state;
