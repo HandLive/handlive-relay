@@ -269,14 +269,15 @@ async fn push_requests_are_checked_and_errors_mapped() {
 
     // Revoked pair: no more pushes (PAIR-03 API 3 logic 4).
     let path = format!("/v1/pairs/{pair_iphone}/revoke");
-    call(
+    let (status, _) = call(
         &app,
         "POST",
         &path,
         &iphone.token,
-        Some(&json!({"reason": "user"})),
+        Some(&iphone.device.revoke_body(pair_iphone)),
     )
     .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
     let (status, err) = post(&android, alert(pair_iphone, iphone.id(), env)).await;
     assert_eq!((status, code(&err)), (StatusCode::FORBIDDEN, "NOT_PAIRED"));
 

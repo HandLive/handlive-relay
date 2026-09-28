@@ -169,20 +169,56 @@ async fn devices_remove_themselves_with_or_without_revoking() {
     .await;
     assert_eq!(status, StatusCode::CREATED);
 
-    // Delete all data: every peer gets a 30-day notice.
-    let (status, _) = call(
-        &app,
-        "DELETE",
-        "/v1/devices/me?revoke_pairs=true",
-        &android.token,
-        None,
-    )
-    .await;
+    // Delete all data needs one signed statement per unrevoked pair; a
+    // missing or bad one deletes nothing (SET-02 API 2 logic 3).
+    let delete_all = "/v1/devices/me?revoke_pairs=true";
+    let stale = now_ms() - 11 * 60 * 1000;
+    for (what, body) in [
+        ("no body", None),
+        ("no statement", Some(json!({"revocations": []}))),
+        (
+            "another pair only",
+            Some(json!({"revocations": [android.device.revocation(pair_mac)]})),
+        ),
+        (
+            "signed by the peer",
+            Some(json!({"revocations": [iphone.device.revocation(pair_iphone)]})),
+        ),
+        (
+            "stale",
+            Some(
+                json!({"revocations": [{"pair_id": pair_iphone, "revoked_at": stale,
+            "sig": android.device.revoke_sig(pair_iphone, stale)}]}),
+            ),
+        ),
+        ("not json", Some(json!("revocations"))),
+    ] {
+        let (status, err) = call(&app, "DELETE", delete_all, &android.token, body.as_ref()).await;
+        assert_eq!(
+            (status, code(&err)),
+            (StatusCode::BAD_REQUEST, "BAD_REQUEST"),
+            "{what}"
+        );
+        assert_eq!(pair_rows(pair_iphone).await, 1, "{what}");
+    }
+    // Every peer gets a 30-day notice with the statement; statements for
+    // pairs the relay does not hold are ignored.
+    let item = android.device.revocation(pair_iphone);
+    let body = json!({"revocations": [android.device.revocation(Uuid::new_v4()), item]});
+    let (status, _) = call(&app, "DELETE", delete_all, &android.token, Some(&body)).await;
     assert_eq!(status, StatusCode::NO_CONTENT);
     assert_eq!(pair_rows(pair_iphone).await, 0);
     let key = revoked_notice_key(&iphone.id());
     let notices: Vec<String> = redis.smembers(&key).await.unwrap();
-    assert_eq!(notices, vec![format!("{pair_iphone}|{}", android.id())]);
+    assert_eq!(
+        notices,
+        vec![format!(
+            "{pair_iphone}|{}|{}|{}",
+            android.id(),
+            item["revoked_at"],
+            item["sig"].as_str().unwrap()
+        )]
+    );
     let ttl: i64 = redis.ttl(&key).await.unwrap();
     assert!(ttl > 29 * 24 * 3600 && ttl <= 30 * 24 * 3600, "{ttl}");
 

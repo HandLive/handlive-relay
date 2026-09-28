@@ -32,10 +32,9 @@ impl Conn {
                 self.send_binary(frame).await
             }
             BusMessage::Control { text } => self.send_text(text).await,
-            BusMessage::PairRevoked { pair_id, by } => {
+            BusMessage::PairRevoked(statement) => {
                 self.reload_peers().await;
-                self.send_text(wire::pair_revoked_message(&pair_id, &by))
-                    .await
+                self.send_text(wire::pair_revoked_message(&statement)).await
             }
             BusMessage::PairsChanged => self.pairs_changed().await,
             BusMessage::Replace { conn_id } if conn_id != self.conn_id => {

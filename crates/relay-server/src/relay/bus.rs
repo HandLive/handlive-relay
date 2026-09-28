@@ -8,6 +8,8 @@
 
 use uuid::Uuid;
 
+use crate::revocation::RevokeStatement;
+
 const TAG_TEXT: u8 = 1;
 const TAG_BINARY: u8 = 2;
 const TAG_CONTROL: u8 = 3;
@@ -15,6 +17,8 @@ const TAG_PAIR_REVOKED: u8 = 4;
 const TAG_PAIRS_CHANGED: u8 = 5;
 const TAG_REPLACE: u8 = 6;
 const TAG_CLOSE: u8 = 7;
+/// pair_id(16) ‖ by(16) ‖ revoked_at(8, BE) ‖ sig(64).
+const PAIR_REVOKED_LEN: usize = 16 + 16 + 8 + 64;
 
 /// `dev:<device_id>`.
 pub fn device_channel(device_id: &Uuid) -> String {
@@ -36,8 +40,9 @@ pub enum BusMessage {
     /// Relay control message written out as-is (`presence`, `rv_joined`,
     /// `rv_msg`).
     Control { text: String },
-    /// `by` revoked `pair_id`: send `pair_revoked`, then reload the peers.
-    PairRevoked { pair_id: Uuid, by: Uuid },
+    /// A pair was revoked: send `pair_revoked` with the signed statement,
+    /// then reload the peers.
+    PairRevoked(RevokeStatement),
     /// The device's pairs changed: reload them (no message to the device
     /// except `presence` for pairs that appeared).
     PairsChanged,
@@ -65,10 +70,12 @@ impl BusMessage {
                 out.push(TAG_CONTROL);
                 out.extend_from_slice(text.as_bytes());
             }
-            Self::PairRevoked { pair_id, by } => {
+            Self::PairRevoked(statement) => {
                 out.push(TAG_PAIR_REVOKED);
-                out.extend_from_slice(pair_id.as_bytes());
-                out.extend_from_slice(by.as_bytes());
+                out.extend_from_slice(statement.pair_id.as_bytes());
+                out.extend_from_slice(statement.by.as_bytes());
+                out.extend_from_slice(&statement.revoked_at.to_be_bytes());
+                out.extend_from_slice(&statement.sig);
             }
             Self::PairsChanged => out.push(TAG_PAIRS_CHANGED),
             Self::Replace { conn_id } => {
@@ -98,10 +105,14 @@ impl BusMessage {
             TAG_CONTROL => Self::Control {
                 text: String::from_utf8(rest.to_vec()).ok()?,
             },
-            TAG_PAIR_REVOKED if rest.len() == 32 => Self::PairRevoked {
-                pair_id: uuid_at(0)?,
-                by: uuid_at(16)?,
-            },
+            TAG_PAIR_REVOKED if rest.len() == PAIR_REVOKED_LEN => {
+                Self::PairRevoked(RevokeStatement {
+                    pair_id: uuid_at(0)?,
+                    by: uuid_at(16)?,
+                    revoked_at: i64::from_be_bytes(rest[32..40].try_into().ok()?),
+                    sig: rest[40..].try_into().ok()?,
+                })
+            }
             TAG_PAIRS_CHANGED if rest.is_empty() => Self::PairsChanged,
             TAG_REPLACE if rest.len() == 16 => Self::Replace {
                 conn_id: uuid_at(0)?,

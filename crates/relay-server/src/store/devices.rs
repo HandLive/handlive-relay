@@ -134,12 +134,14 @@ pub async fn clear_push_token(pool: &PgPool, device_id: Uuid) -> Result<(), sqlx
 }
 
 /// Delete the device (SET-02 API 2, one transaction). Its `pairs` rows go by
-/// `ON DELETE CASCADE`; the peers of its unrevoked pairs are returned as
-/// `(pair_id, peer_device_id)` so they can be told afterwards.
-pub async fn delete_with_peers(
+/// `ON DELETE CASCADE`. `check` sees the unrevoked pairs as
+/// `(pair_id, peer_device_id)` while they are locked; when it fails nothing
+/// is deleted and its error is returned as `Ok(Err(_))`.
+pub async fn delete_with_peers<T, E>(
     pool: &PgPool,
     device_id: Uuid,
-) -> Result<Vec<(Uuid, Uuid)>, sqlx::Error> {
+    check: impl FnOnce(&[(Uuid, Uuid)]) -> Result<T, E>,
+) -> Result<Result<T, E>, sqlx::Error> {
     let mut tx = pool.begin().await?;
     let rows = sqlx::query(
         "SELECT pair_id,
@@ -151,14 +153,23 @@ pub async fn delete_with_peers(
     .bind(device_id)
     .fetch_all(&mut *tx)
     .await?;
+    let held = rows
+        .into_iter()
+        .map(|r| Ok((r.try_get("pair_id")?, r.try_get("peer_device_id")?)))
+        .collect::<Result<Vec<(Uuid, Uuid)>, sqlx::Error>>()?;
+    let checked = match check(&held) {
+        Ok(checked) => checked,
+        Err(e) => {
+            tx.rollback().await?;
+            return Ok(Err(e));
+        }
+    };
     sqlx::query("DELETE FROM devices WHERE device_id = $1")
         .bind(device_id)
         .execute(&mut *tx)
         .await?;
     tx.commit().await?;
-    rows.into_iter()
-        .map(|r| Ok((r.try_get("pair_id")?, r.try_get("peer_device_id")?)))
-        .collect()
+    Ok(Ok(checked))
 }
 
 /// Push registration of the other member of a valid pair.

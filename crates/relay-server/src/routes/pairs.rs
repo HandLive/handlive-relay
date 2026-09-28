@@ -9,11 +9,14 @@ use uuid::Uuid;
 use crate::attestation::{ATTESTATION_LEN, PairClaim, verify_pair_claim};
 use crate::auth_extractor::AuthenticatedDevice;
 use crate::b64u;
+use crate::clock::now_ms;
 use crate::error::ApiError;
 use crate::limits::{self, GROUP_REST, REST_PER_MINUTE};
 use crate::relay::bus::BusMessage;
 use crate::relay::presence;
+use crate::revocation::{RevokeRequest, verify_statement};
 use crate::state::AppState;
+use crate::store::devices;
 use crate::store::pairs::{self, InsertOutcome, NewPair};
 
 pub const REVOKE_REASONS: [&str; 3] = ["user", "reinstall", "lost_device"];
@@ -32,11 +35,6 @@ pub struct PairRequest {
 #[derive(Debug, Deserialize)]
 pub struct ListQuery {
     pub include_revoked: Option<bool>,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct RevokeRequest {
-    pub reason: String,
 }
 
 /// Decoded binary fields of a pair registration.
@@ -153,6 +151,8 @@ pub async fn list(
                 "peer_platform": r.peer_platform,
                 "created_at": r.created_at_ms,
                 "revoked_at": r.revoked_at_ms,
+                "revoked_by": r.revoked_by.map(|id| id.hyphenated().to_string()),
+                "revoke_sig": r.revoke_sig.as_deref().map(b64u::encode),
                 "peer_online": online,
             })
         })
@@ -160,6 +160,9 @@ pub async fn list(
     Ok(HttpResponse::Ok().json(json!({ "pairs": pairs })))
 }
 
+/// `POST /v1/pairs/{pair_id}/revoke` (PAIR-03 API 3): only a member may
+/// revoke, and only with its own signed `HLREVOKE1` statement, which the
+/// relay stores and forwards to the peer.
 pub async fn revoke(
     state: web::Data<AppState>,
     device: AuthenticatedDevice,
@@ -168,27 +171,48 @@ pub async fn revoke(
 ) -> Result<HttpResponse, ApiError> {
     limits::check_device(&state.redis, &device.device_id, GROUP_REST, REST_PER_MINUTE).await?;
     let pair_id = Uuid::try_parse(&path).map_err(|_| ApiError::BadRequest)?;
-    if !REVOKE_REASONS.contains(&body.reason.as_str()) {
+    let req = body.into_inner();
+    if req
+        .reason
+        .as_deref()
+        .is_some_and(|r| !REVOKE_REASONS.contains(&r))
+    {
         return Err(ApiError::BadRequest);
     }
     let me = device.device_id;
-    let revoked = pairs::revoke(&state.db, pair_id, me)
+    let members = pairs::members(&state.db, pair_id)
+        .await
+        .map_err(|e| ApiError::internal("pairs lookup", e))?;
+    match members {
+        None => return Err(ApiError::DeviceNotFound),
+        Some((a, b)) if a != me && b != me => return Err(ApiError::NotPaired),
+        Some(_) => {}
+    }
+    let key = devices::find_key(&state.db, me)
+        .await
+        .map_err(|e| ApiError::internal("devices lookup", e))?
+        .ok_or(ApiError::DeviceNotFound)?;
+    let ik_sig_pub: [u8; 32] = key
+        .ik_sig_pub
+        .try_into()
+        .map_err(|_| ApiError::internal("devices row", "ik_sig_pub not 32 bytes"))?;
+    let statement = verify_statement(
+        &pair_id,
+        &me,
+        &ik_sig_pub,
+        req.revoked_at,
+        req.sig.as_deref(),
+        now_ms(),
+    )?;
+    let revoked = pairs::revoke(&state.db, &statement)
         .await
         .map_err(|e| ApiError::internal("pairs revoke", e))?;
+    // None: already revoked earlier, the first statement stays (PAIR-03 E4).
     if let Some(peer) = revoked {
-        notify(&state, &peer, &BusMessage::PairRevoked { pair_id, by: me }).await;
+        notify(&state, &peer, &BusMessage::PairRevoked(statement)).await;
         notify(&state, &me, &BusMessage::PairsChanged).await;
-        return Ok(HttpResponse::NoContent().finish());
     }
-    match pairs::members(&state.db, pair_id)
-        .await
-        .map_err(|e| ApiError::internal("pairs lookup", e))?
-    {
-        None => Err(ApiError::DeviceNotFound),
-        Some((a, b)) if a != me && b != me => Err(ApiError::NotPaired),
-        // Already revoked earlier: idempotent (PAIR-03 E4).
-        Some(_) => Ok(HttpResponse::NoContent().finish()),
-    }
+    Ok(HttpResponse::NoContent().finish())
 }
 
 /// Publish to a device's relay connection, wherever it is; a failure only

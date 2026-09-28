@@ -7,6 +7,8 @@ use std::collections::HashMap;
 use sqlx::{PgPool, Row};
 use uuid::Uuid;
 
+use crate::revocation::RevokeStatement;
+
 /// Key and platform of a registered, non-revoked device.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MemberDevice {
@@ -110,6 +112,10 @@ pub struct PairListing {
     pub peer_platform: String,
     pub created_at_ms: i64,
     pub revoked_at_ms: Option<i64>,
+    /// Signer of the revocation statement.
+    pub revoked_by: Option<Uuid>,
+    /// `HLREVOKE1` signature; `None` on rows revoked before signed revocation.
+    pub revoke_sig: Option<Vec<u8>>,
 }
 
 /// The pairs `device_id` belongs to, newest first (PAIR-02 API 1).
@@ -123,7 +129,8 @@ pub async fn list(
                 CASE WHEN p.device_a = $1 THEN p.device_b ELSE p.device_a END AS peer_device_id,
                 d.platform AS peer_platform,
                 (extract(epoch FROM p.created_at) * 1000)::bigint AS created_at_ms,
-                (extract(epoch FROM p.revoked_at) * 1000)::bigint AS revoked_at_ms
+                (extract(epoch FROM p.revoked_at) * 1000)::bigint AS revoked_at_ms,
+                p.revoked_by, p.revoke_sig
          FROM pairs p
          JOIN devices d ON d.device_id = CASE WHEN p.device_a = $1 THEN p.device_b ELSE p.device_a END
          WHERE (p.device_a = $1 OR p.device_b = $1)
@@ -142,21 +149,31 @@ pub async fn list(
                 peer_platform: r.try_get("peer_platform")?,
                 created_at_ms: r.try_get("created_at_ms")?,
                 revoked_at_ms: r.try_get("revoked_at_ms")?,
+                revoked_by: r.try_get("revoked_by")?,
+                revoke_sig: r.try_get("revoke_sig")?,
             })
         })
         .collect()
 }
 
-/// Mark the pair revoked by `by` if `by` is a member and it is still valid.
-/// Returns the peer to notify, or `None` when nothing changed.
-pub async fn revoke(pool: &PgPool, pair_id: Uuid, by: Uuid) -> Result<Option<Uuid>, sqlx::Error> {
+/// Store a verified statement if its signer is a member and the pair is
+/// still valid (the first statement stays). Returns the peer to notify, or
+/// `None` when nothing changed.
+pub async fn revoke(
+    pool: &PgPool,
+    statement: &RevokeStatement,
+) -> Result<Option<Uuid>, sqlx::Error> {
     let row = sqlx::query(
-        "UPDATE pairs SET revoked_at = now(), revoked_by = $2
+        "UPDATE pairs
+         SET revoked_at = TIMESTAMPTZ 'epoch' + $3 * INTERVAL '1 millisecond',
+             revoked_by = $2, revoke_sig = $4
          WHERE pair_id = $1 AND (device_a = $2 OR device_b = $2) AND revoked_at IS NULL
          RETURNING CASE WHEN device_a = $2 THEN device_b ELSE device_a END AS peer_device_id",
     )
-    .bind(pair_id)
-    .bind(by)
+    .bind(statement.pair_id)
+    .bind(statement.by)
+    .bind(statement.revoked_at)
+    .bind(&statement.sig[..])
     .fetch_optional(pool)
     .await?;
     row.map(|r| r.try_get("peer_device_id")).transpose()
@@ -194,24 +211,35 @@ pub async fn active_peers(
         .collect()
 }
 
-/// Pairs of `device_id` revoked within the last 30 days: `(pair_id, by)`
-/// (PAIR-03 API 4 logic 2). `by` falls back to the peer when unknown.
+/// Signed statements of the pairs of `device_id` revoked within the last 30
+/// days (PAIR-03 API 4 logic 2). Rows revoked before signed revocation have
+/// no statement and are left out: a device would ignore them anyway.
 pub async fn recently_revoked(
     pool: &PgPool,
     device_id: Uuid,
-) -> Result<Vec<(Uuid, Uuid)>, sqlx::Error> {
+) -> Result<Vec<RevokeStatement>, sqlx::Error> {
     let rows = sqlx::query(
-        "SELECT pair_id,
-                COALESCE(revoked_by,
-                         CASE WHEN device_a = $1 THEN device_b ELSE device_a END) AS by_device
+        "SELECT pair_id, revoked_by, revoke_sig,
+                (extract(epoch FROM revoked_at) * 1000)::bigint AS revoked_at_ms
          FROM pairs
          WHERE (device_a = $1 OR device_b = $1)
-           AND revoked_at > now() - INTERVAL '30 days'",
+           AND revoked_at > now() - INTERVAL '30 days'
+           AND revoked_by IS NOT NULL AND revoke_sig IS NOT NULL",
     )
     .bind(device_id)
     .fetch_all(pool)
     .await?;
     rows.into_iter()
-        .map(|r| Ok((r.try_get("pair_id")?, r.try_get("by_device")?)))
+        .map(|r| {
+            let sig: Vec<u8> = r.try_get("revoke_sig")?;
+            Ok(RevokeStatement {
+                pair_id: r.try_get("pair_id")?,
+                by: r.try_get("revoked_by")?,
+                revoked_at: r.try_get("revoked_at_ms")?,
+                sig: sig
+                    .try_into()
+                    .map_err(|_| sqlx::Error::Decode("revoke_sig is not 64 bytes".into()))?,
+            })
+        })
         .collect()
 }
