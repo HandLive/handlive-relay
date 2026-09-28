@@ -92,13 +92,15 @@ impl Default for RelaySettings {
     }
 }
 
-/// Parse a comma-separated list of IP addresses (`RELAY_TRUSTED_PROXIES`).
+/// Parse a comma-separated list of IP addresses (`RELAY_TRUSTED_PROXIES`);
+/// IPv4-mapped IPv6 entries become IPv4.
 pub fn parse_ip_list(list: &str) -> Result<Vec<IpAddr>, String> {
     list.split(',')
         .map(str::trim)
         .filter(|s| !s.is_empty())
         .map(|s| {
             s.parse::<IpAddr>()
+                .map(|ip| ip.to_canonical())
                 .map_err(|_| format!("RELAY_TRUSTED_PROXIES: not an IP address: {s}"))
         })
         .collect()

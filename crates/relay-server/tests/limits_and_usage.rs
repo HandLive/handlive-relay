@@ -53,6 +53,44 @@ fn forwarded_for_is_only_believed_from_trusted_proxies() {
 }
 
 #[test]
+fn ipv4_mapped_addresses_compare_as_ipv4() {
+    let trusted = parse_ip_list("::ffff:10.0.0.2").unwrap();
+    assert_eq!(trusted, vec![ip("10.0.0.2")]);
+    // A dual-stack listener reports the proxy as ::ffff:10.0.0.2.
+    assert_eq!(
+        client_ip(
+            Some(ip("::ffff:10.0.0.2")),
+            Some("198.51.100.1"),
+            &[ip("10.0.0.2")]
+        ),
+        Some(ip("198.51.100.1"))
+    );
+    // A trusted list written by hand with the mapped form still matches.
+    assert_eq!(
+        client_ip(
+            Some(ip("10.0.0.2")),
+            Some("198.51.100.1"),
+            &[ip("::ffff:10.0.0.2")]
+        ),
+        Some(ip("198.51.100.1"))
+    );
+    // Hops are normalized too: a mapped trusted hop is skipped, a mapped
+    // client comes out as IPv4.
+    assert_eq!(
+        client_ip(
+            Some(ip("10.0.0.2")),
+            Some("::ffff:198.51.100.1, ::ffff:10.0.0.3"),
+            &[ip("10.0.0.2"), ip("10.0.0.3")]
+        ),
+        Some(ip("198.51.100.1"))
+    );
+    assert_eq!(
+        client_ip(Some(ip("::ffff:203.0.113.7")), None, &[]),
+        Some(ip("203.0.113.7"))
+    );
+}
+
+#[test]
 fn settings_defaults_are_the_spec_values() {
     let s = RelaySettings::default();
     assert_eq!(s.registrations_per_ip_per_hour, 10);

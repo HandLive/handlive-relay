@@ -164,13 +164,16 @@ async fn count_hour(
 /// the header is read from the right, skipping trusted proxies, and the first
 /// untrusted hop is the client. A malformed entry stops the walk at the last
 /// trusted hop, so a forged header can never pick an arbitrary address.
+/// Every address (peer, hops, trusted list) is compared after mapping
+/// IPv4-mapped IPv6 to IPv4, and the result is in that form.
 pub fn client_ip(
     peer: Option<IpAddr>,
     forwarded_for: Option<&str>,
     trusted: &[IpAddr],
 ) -> Option<IpAddr> {
-    let peer = peer?;
-    if !trusted.contains(&peer) {
+    let is_trusted = |ip: IpAddr| trusted.iter().any(|t| t.to_canonical() == ip);
+    let peer = peer?.to_canonical();
+    if !is_trusted(peer) {
         return Some(peer);
     }
     let Some(header) = forwarded_for else {
@@ -181,7 +184,8 @@ pub fn client_ip(
         let Ok(ip) = hop.trim().parse::<IpAddr>() else {
             return Some(last);
         };
-        if !trusted.contains(&ip) {
+        let ip = ip.to_canonical();
+        if !is_trusted(ip) {
             return Some(ip);
         }
         last = ip;
