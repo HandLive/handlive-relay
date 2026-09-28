@@ -134,9 +134,11 @@ async fn listing_and_revoking_pairs() {
         list,
         json!({"pairs": [
             {"pair_id": pair_iphone, "peer_device_id": iphone.id(), "peer_platform": "ios",
-             "created_at": 2_000_000, "revoked_at": null, "peer_online": false},
+             "created_at": 2_000_000, "revoked_at": null, "revoked_by": null,
+             "revoke_sig": null, "peer_online": false},
             {"pair_id": pair_mac, "peer_device_id": mac.id(), "peer_platform": "macos",
-             "created_at": 1_000_000, "revoked_at": null, "peer_online": false},
+             "created_at": 1_000_000, "revoked_at": null, "revoked_by": null,
+             "revoke_sig": null, "peer_online": false},
         ]})
     );
     let (_, list) = call(&app, "GET", "/v1/pairs", &mac.token, None).await;
@@ -144,34 +146,37 @@ async fn listing_and_revoking_pairs() {
     assert_eq!(list["pairs"][0]["peer_platform"], "android");
 
     let revoke = |id: Uuid| format!("/v1/pairs/{id}/revoke");
-    let reason = json!({"reason": "lost_device"});
+    let signed = mac.device.revoke_body(pair_mac);
     let (status, err) = call(
         &app,
         "POST",
         &revoke(pair_mac),
         &stranger.token,
-        Some(&reason),
+        Some(&stranger.device.revoke_body(pair_mac)),
     )
     .await;
     assert_eq!((status, code(&err)), (StatusCode::FORBIDDEN, "NOT_PAIRED"));
+    let unknown = Uuid::new_v4();
     let (status, err) = call(
         &app,
         "POST",
-        &revoke(Uuid::new_v4()),
+        &revoke(unknown),
         &mac.token,
-        Some(&reason),
+        Some(&mac.device.revoke_body(unknown)),
     )
     .await;
     assert_eq!(
         (status, code(&err)),
         (StatusCode::NOT_FOUND, "DEVICE_NOT_FOUND")
     );
+    let mut bad_reason = signed.clone();
+    bad_reason["reason"] = json!("bored");
     let (status, _) = call(
         &app,
         "POST",
         &revoke(pair_mac),
         &mac.token,
-        Some(&json!({"reason": "bored"})),
+        Some(&bad_reason),
     )
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
@@ -180,20 +185,68 @@ async fn listing_and_revoking_pairs() {
         "POST",
         "/v1/pairs/not-a-uuid/revoke",
         &mac.token,
-        Some(&reason),
+        Some(&signed),
     )
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
+    // A statement is required, and must be the caller's own, fresh and for
+    // this pair (PAIR-03 API 3 logic 2); nothing changes otherwise.
+    let now = now_ms();
+    let stale = now - 11 * 60 * 1000;
+    for (what, body) in [
+        ("no statement", json!({"reason": "user"})),
+        ("no sig", json!({"revoked_at": now})),
+        (
+            "no revoked_at",
+            json!({"sig": mac.device.revoke_sig(pair_mac, now)}),
+        ),
+        ("signed by the peer", android.device.revoke_body(pair_mac)),
+        ("another pair", mac.device.revoke_body(pair_iphone)),
+        (
+            "stale",
+            json!({"revoked_at": stale, "sig": mac.device.revoke_sig(pair_mac, stale)}),
+        ),
+        (
+            "changed time",
+            json!({"revoked_at": now + 1, "sig": mac.device.revoke_sig(pair_mac, now)}),
+        ),
+        ("short sig", json!({"revoked_at": now, "sig": "AAAA"})),
+    ] {
+        let (status, err) = call(&app, "POST", &revoke(pair_mac), &mac.token, Some(&body)).await;
+        assert_eq!(
+            (status, code(&err)),
+            (StatusCode::BAD_REQUEST, "BAD_REQUEST"),
+            "{what}"
+        );
+    }
+    let (_, list) = call(
+        &app,
+        "GET",
+        "/v1/pairs?include_revoked=false",
+        &mac.token,
+        None,
+    )
+    .await;
+    assert_eq!(list["pairs"].as_array().unwrap().len(), 1, "still valid");
 
-    let (status, _) = call(&app, "POST", &revoke(pair_mac), &mac.token, Some(&reason)).await;
+    let mut with_reason = signed.clone();
+    with_reason["reason"] = json!("lost_device");
+    let (status, _) = call(
+        &app,
+        "POST",
+        &revoke(pair_mac),
+        &mac.token,
+        Some(&with_reason),
+    )
+    .await;
     assert_eq!(status, StatusCode::NO_CONTENT);
-    // Idempotent, also for the other member (PAIR-03 E4).
+    // Idempotent, also for the other member (PAIR-03 E4); the first statement stays.
     let (status, _) = call(
         &app,
         "POST",
         &revoke(pair_mac),
         &android.token,
-        Some(&json!({"reason": "user"})),
+        Some(&android.device.revoke_body(pair_mac)),
     )
     .await;
     assert_eq!(status, StatusCode::NO_CONTENT);
@@ -201,8 +254,18 @@ async fn listing_and_revoking_pairs() {
     let (_, list) = call(&app, "GET", "/v1/pairs", &android.token, None).await;
     let revoked = &list["pairs"][1];
     assert_eq!(revoked["pair_id"], json!(pair_mac));
-    let at = revoked["revoked_at"].as_i64().expect("revoked_at set");
-    assert!((at - now_ms()).abs() < 60_000);
+    assert_eq!(revoked["revoked_at"], signed["revoked_at"]);
+    assert_eq!(revoked["revoked_by"], json!(mac.id()));
+    assert_eq!(revoked["revoke_sig"], signed["sig"]);
+    let valid = &list["pairs"][0];
+    assert_eq!(
+        (
+            &valid["revoked_at"],
+            &valid["revoked_by"],
+            &valid["revoke_sig"]
+        ),
+        (&json!(null), &json!(null), &json!(null))
+    );
     let (_, active) = call(
         &app,
         "GET",
@@ -222,12 +285,17 @@ async fn listing_and_revoking_pairs() {
     )
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
-    let row: (Option<Uuid>,) = sqlx::query_as("SELECT revoked_by FROM pairs WHERE pair_id = $1")
-        .bind(pair_mac)
-        .fetch_one(&state.db)
-        .await
-        .unwrap();
+    let row: (Option<Uuid>, Option<Vec<u8>>) =
+        sqlx::query_as("SELECT revoked_by, revoke_sig FROM pairs WHERE pair_id = $1")
+            .bind(pair_mac)
+            .fetch_one(&state.db)
+            .await
+            .unwrap();
     assert_eq!(row.0, Some(mac.id()));
+    assert_eq!(
+        row.1.map(|s| relay_server::b64u::encode(&s)),
+        signed["sig"].as_str().map(str::to_owned)
+    );
 }
 
 #[actix_web::test]

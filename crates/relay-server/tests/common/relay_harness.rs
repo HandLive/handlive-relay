@@ -31,10 +31,12 @@ use super::http_harness::{TEST_JWT_SECRET, TestService, code, post};
 /// How long a test waits for an expected frame.
 pub const WAIT: Duration = Duration::from_secs(5);
 
-/// Spec defaults, without the per-IP registration limit.
+/// Spec defaults, without the registration limits: the relay-wide cap
+/// counts every test registration in the shared Redis.
 pub fn test_settings() -> RelaySettings {
     RelaySettings {
         registrations_per_ip_per_hour: u64::MAX,
+        max_registrations_per_hour: u64::MAX,
         ..RelaySettings::default()
     }
 }

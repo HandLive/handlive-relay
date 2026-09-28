@@ -1,12 +1,20 @@
 //! Relay server entry point: read config, connect, migrate, serve.
 
 use actix_web::{App, HttpServer, web};
-use relay_server::{MIGRATOR, access_log, config::Config, configure, maintenance, state::AppState};
+use relay_server::{
+    MIGRATOR, access_log,
+    config::{self, Config},
+    configure, maintenance,
+    state::AppState,
+};
 
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
     env_logger::init_from_env(env_logger::Env::default().default_filter_or("info"));
     let config = Config::from_env().map_err(std::io::Error::other)?;
+    if let Some(warning) = config::proxy_warning(&config.bind, &config.settings.trusted_proxies) {
+        log::warn!("{warning}");
+    }
     let state = AppState::connect(&config)
         .await
         .map_err(std::io::Error::other)?;

@@ -127,13 +127,15 @@ async fn relay_logs_carry_no_content_or_identifiers() {
         .send_json(&json!({"op":"rv_msg","rv_id":rv_id,"env":pair_env}))
         .await;
     android_ws.recv_json().await;
-    // Removal with a query string.
+    // Removal with a query string and signed statements.
+    let revocation = mac.device.revocation(pair_id);
+    let body = json!({"revocations": [revocation]});
     let (status, _) = call(
         &app,
         "DELETE",
         "/v1/devices/me?revoke_pairs=true",
         &mac.token,
-        None,
+        Some(&body),
     )
     .await;
     assert_eq!(status, StatusCode::NO_CONTENT);
@@ -203,6 +205,8 @@ async fn relay_logs_carry_no_content_or_identifiers() {
         hex_marker.clone(),
         rv_id.clone(),
         "revoke_pairs".to_owned(),
+        revocation["sig"].as_str().unwrap().to_owned(),
+        pair_id.to_string(),
         android.token.clone(),
         mac.token.clone(),
         iphone.token.clone(),

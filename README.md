@@ -21,10 +21,10 @@ Specification: `../docs/detailed-design/00-common-specs.md` (0.4.3, 0.6.4, 0.7.3
 | POST | `/v1/auth/challenge` | — | 0.6.4, CONN-03 API 2 |
 | POST | `/v1/auth/token` | — | 0.6.4, CONN-03 API 3 (JWT HS256, 900 s) |
 | PUT | `/v1/devices/me/push-token` | JWT | CONN-04 API 1 |
-| DELETE | `/v1/devices/me?revoke_pairs=<bool>` | JWT | SET-02 API 2, decision C16 |
+| DELETE | `/v1/devices/me?revoke_pairs=<bool>` | JWT | SET-02 API 2, decision C16; `true` needs one signed `HLREVOKE1` statement per unrevoked pair |
 | POST | `/v1/pairs` | JWT | PAIR-01 API 8 (attestation + two signatures) |
 | GET | `/v1/pairs[?include_revoked=<bool>]` | JWT | PAIR-02 API 1 |
-| POST | `/v1/pairs/{pair_id}/revoke` | JWT | PAIR-03 API 3 |
+| POST | `/v1/pairs/{pair_id}/revoke` | JWT | PAIR-03 API 3; body `{revoked_at, sig}` (`HLREVOKE1`, 0.6.2) |
 | POST | `/v1/push` | JWT | CONN-04 API 2–4 (FCM wake, APNs alert) |
 | GET (WebSocket) | `/v1/relay` | JWT | CONN-03 API 4–6, PAIR-01 API 7, PAIR-03 API 4 |
 
@@ -39,7 +39,7 @@ Every JWT endpoint checks that the device still exists (404 `DEVICE_NOT_FOUND`, 
 ### The relay channel `/v1/relay`
 
 - Text frames `{"to","env"}` become `{"from","env"}` with `env` copied byte for byte; binary `HR` frames (`0x48 0x52` ‖ ver ‖ op ‖ device_id ‖ HL frame) get the source `device_id` in place of the destination. Only the two devices of a valid pair reach each other (`error NOT_PAIRED`); an unreachable peer gets `error NOT_CONNECTED`; frames over 256 KiB get `error PAYLOAD_TOO_LARGE`; over 2 MiB/s per pair the relay delays reading instead of dropping.
-- Control ops: `presence` (every pair on connect, then on each change), `pair_revoked` (at once, on reconnect for 30 days, and from `revoked_notice`), `rv_join` / `rv_joined` / `rv_msg` (pairing rendezvous: two members, 180 s, `pair` envelopes only, no PIN hello), `error`.
+- Control ops: `presence` (every pair on connect, then on each change), `pair_revoked` with the revoking device's signed statement (at once, on reconnect for 30 days, and from `revoked_notice`; rows revoked before signed revocation are not replayed), `rv_join` / `rv_joined` / `rv_msg` (pairing rendezvous: two members, 180 s, `pair` envelopes only, no PIN hello), `error`.
 - Several instances share the work (decision C5): `presence:<device_id>` names the instance holding a device, and instances forward to each other through the Redis channel `dev:<device_id>`. After a Redis restart an instance subscribes again and restores presence without dropping the devices.
 - Close codes: 1000 (the device removed itself), 4400 (malformed stream), 4409 (replaced by a newer connection), 4411 (silent for 45 s; the relay pings every 15 s), 4500 (internal).
 - Statistics: envelopes, bytes and pushes per `device_hash` = SHA-256(device_id ‖ monthly salt), the salt living 40 days in Redis only; a daily job deletes statistics after 30 days and devices inactive for 180 days.
@@ -87,7 +87,7 @@ docker compose down -v                    # stop and drop the dev volume
 
 `tests/relay_redis_restart.rs` flushes the Redis database; run the integration tests against a dev Redis only, one test binary at a time (the default of `cargo test`). The push tests use local mock APNs/FCM servers and keys generated per run; no real credentials are needed.
 
-Load test from one machine (`../shared/tools/bench/relay_load.py`): start the relay with `RELAY_TRUSTED_PROXIES=127.0.0.1`; the script sends one `X-Forwarded-For` address per simulated device, so the limit of 10 new registrations per hour applies per simulated address instead of to 127.0.0.1.
+Load test from one machine (`../shared/tools/bench/relay_load.py`): start the relay on a loopback `RELAY_BIND` (`127.0.0.1` is then trusted by default) or with `RELAY_TRUSTED_PROXIES=127.0.0.1`; the script sends one `X-Forwarded-For` address per simulated device, so the limit of 10 new registrations per hour applies per simulated address instead of to 127.0.0.1. Set `RELAY_MAX_REGISTRATIONS_PER_HOUR` above the number of simulated devices.
 
 ## Configuration
 
@@ -98,7 +98,8 @@ Load test from one machine (`../shared/tools/bench/relay_load.py`): start the re
 | `RELAY_JWT_SECRET` | HS256 key for device JWTs, ≥ 32 bytes (`openssl rand -base64 48`). Never commit it |
 | `RELAY_BIND` | Listen address, default `127.0.0.1:8080` |
 | `RELAY_INSTANCE_ID` | Optional name of this instance in `presence:<device_id>`; default a random UUID per start |
-| `RELAY_TRUSTED_PROXIES` | Optional comma-separated IPs of reverse proxies whose `X-Forwarded-For` is believed for the per-IP registration limit; without it the TCP peer address counts |
+| `RELAY_TRUSTED_PROXIES` | Optional comma-separated IPs of reverse proxies whose `X-Forwarded-For` is believed for the per-IP limits (registration, auth); when it is empty and `RELAY_BIND` is a loopback address, `127.0.0.1` and `::1` (a reverse proxy on the same host) are trusted; empty with a non-loopback bind, the TCP peer address counts and the relay logs a warning at startup. A peer that is not trusted but sends `X-Forwarded-For` is logged at most once a minute. IPv6 clients count per /64; IPv4-mapped IPv6 counts as IPv4 |
+| `RELAY_MAX_REGISTRATIONS_PER_HOUR` | Optional cap of new device registrations per hour on the whole relay, default 1000; over it → 429 `RATE_LIMITED` |
 | `RELAY_APNS_KEY_PATH` | Path of the APNs `.p8` provider key (outside the repository). APNs is enabled when this and the next three are set |
 | `RELAY_APNS_KEY_ID` | Key id of the `.p8` key (JWT `kid`) |
 | `RELAY_APNS_TEAM_ID` | Apple team id (JWT `iss`) |

@@ -4,6 +4,8 @@
 //!   ‖ UTF-8(platform) ‖ ts(int64 BE).
 //! - Token (spec 0.6.4, CONN-03 API 3): `"HLAUTH1"` ‖ challenge(32 raw bytes)
 //!   ‖ device_id(16).
+//! - Revocation (spec 0.6.2, PAIR-03 API 3): `"HLREVOKE1"` ‖ pair_id(16) ‖
+//!   by = revoking device_id(16) ‖ revoked_at(uint64 BE, ms) — 49 bytes.
 
 use ed25519_dalek::{Signature, VerifyingKey};
 use uuid::Uuid;
@@ -13,6 +15,7 @@ use crate::error::ApiError;
 
 pub const REGISTER_LABEL: &[u8] = b"HLREG1";
 pub const AUTH_LABEL: &[u8] = b"HLAUTH1";
+pub const REVOKE_LABEL: &[u8] = b"HLREVOKE1";
 
 pub fn registration_message(
     device_id: &Uuid,
@@ -34,6 +37,15 @@ pub fn auth_message(challenge: &[u8; 32], device_id: &Uuid) -> Vec<u8> {
     msg.extend_from_slice(AUTH_LABEL);
     msg.extend_from_slice(challenge);
     msg.extend_from_slice(device_id.as_bytes());
+    msg
+}
+
+pub fn revoke_message(pair_id: &Uuid, by: &Uuid, revoked_at_ms: u64) -> Vec<u8> {
+    let mut msg = Vec::with_capacity(REVOKE_LABEL.len() + 16 + 16 + 8);
+    msg.extend_from_slice(REVOKE_LABEL);
+    msg.extend_from_slice(pair_id.as_bytes());
+    msg.extend_from_slice(by.as_bytes());
+    msg.extend_from_slice(&revoked_at_ms.to_be_bytes());
     msg
 }
 

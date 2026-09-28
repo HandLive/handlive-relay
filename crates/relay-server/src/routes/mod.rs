@@ -8,6 +8,8 @@ pub mod relay_ws;
 
 use actix_web::web;
 
+/// Body limit of `DELETE /v1/devices/me` (one ~150-byte revocation per pair).
+const DELETE_ME_BODY_BYTES: usize = 64 * 1024;
 /// Body limit of `PUT /v1/devices/me/push-token` (token up to 4,096 chars).
 const PUSH_TOKEN_BODY_BYTES: usize = 8 * 1024;
 
@@ -15,7 +17,11 @@ pub fn configure(cfg: &mut web::ServiceConfig) {
     cfg.service(
         web::scope("/v1")
             .route("/devices", web::post().to(devices::register))
-            .route("/devices/me", web::delete().to(devices::delete_me))
+            .service(
+                web::resource("/devices/me")
+                    .app_data(json_config(DELETE_ME_BODY_BYTES))
+                    .route(web::delete().to(devices::delete_me)),
+            )
             .service(
                 web::resource("/devices/me/push-token")
                     .app_data(json_config(PUSH_TOKEN_BODY_BYTES))

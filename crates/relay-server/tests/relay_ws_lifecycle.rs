@@ -18,8 +18,9 @@ use redis::AsyncCommands;
 use relay_server::clock::now_ms;
 use relay_server::jwt::JwtKeys;
 use relay_server::relay::presence::{presence_key, revoked_notice_key};
-use serde_json::json;
+use serde_json::{Value, json};
 use tokio_tungstenite::tungstenite::Message;
+use uuid::Uuid;
 
 #[actix_web::test]
 #[ignore = "needs PostgreSQL + Redis (docker compose)"]
@@ -171,19 +172,16 @@ async fn pairs_registered_and_revoked_while_connected() {
 
     // Revoked by the phone: the Mac is told at once, routing stops both ways.
     let path = format!("/v1/pairs/{pair_id}/revoke");
-    let (status, _) = call(
-        &app,
-        "POST",
-        &path,
-        &android.token,
-        Some(&json!({"reason": "user"})),
-    )
-    .await;
+    let body = android.device.revoke_body(pair_id);
+    let (status, _) = call(&app, "POST", &path, &android.token, Some(&body)).await;
     assert_eq!(status, StatusCode::NO_CONTENT);
-    assert_eq!(
-        mac_ws.recv_json().await,
-        json!({"op": "pair_revoked", "pair_id": pair_id, "by": android.id()})
+    let revoked = common::pair_revoked(
+        pair_id,
+        android.id(),
+        body["revoked_at"].as_i64().unwrap(),
+        body["sig"].as_str().unwrap(),
     );
+    assert_eq!(mac_ws.recv_json().await, revoked);
     android_ws.expect_quiet(Duration::from_millis(300)).await;
     mac_ws
         .send_json(&json!({"to": android.id(), "env": envelope("sms", "eA==")}))
@@ -197,11 +195,22 @@ async fn pairs_registered_and_revoked_while_connected() {
     // A reconnect replays the revocation (30 days) and no presence for it.
     mac_ws.close().await;
     let mut again = connect(&relay, &mac).await;
-    assert_eq!(
-        again.recv_json().await,
-        json!({"op": "pair_revoked", "pair_id": pair_id, "by": android.id()})
-    );
+    assert_eq!(again.recv_json().await, revoked);
     again.expect_quiet(Duration::from_millis(300)).await;
+
+    // A row revoked before signed revocation has no statement to replay.
+    let legacy = pair(&app, &android, &mac).await;
+    again.recv_json().await;
+    sqlx::query("UPDATE pairs SET revoked_at = now(), revoked_by = $2 WHERE pair_id = $1")
+        .bind(legacy)
+        .bind(android.id())
+        .execute(&relay.state.db)
+        .await
+        .unwrap();
+    again.close().await;
+    let mut third = connect(&relay, &mac).await;
+    assert_eq!(third.recv_json().await, revoked);
+    third.expect_quiet(Duration::from_millis(300)).await;
     relay.stop().await;
 }
 
@@ -279,27 +288,34 @@ async fn deleting_all_data_revokes_pairs_now_and_on_reconnect() {
         presence(pair_mac, android.id(), true)
     );
 
+    let items = [
+        android.device.revocation(pair_mac),
+        android.device.revocation(pair_iphone),
+    ];
+    let body = json!({"revocations": items});
     let (status, _) = call(
         &app,
         "DELETE",
         "/v1/devices/me?revoke_pairs=true",
         &android.token,
-        None,
+        Some(&body),
     )
     .await;
     assert_eq!(status, StatusCode::NO_CONTENT);
     assert_eq!(android_ws.expect_close().await, Some(1000));
+    let frame = |pair_id: Uuid, item: &Value| {
+        common::pair_revoked(
+            pair_id,
+            android.id(),
+            item["revoked_at"].as_i64().unwrap(),
+            item["sig"].as_str().unwrap(),
+        )
+    };
     // Online peer: told right away.
-    assert_eq!(
-        mac_ws.recv_json().await,
-        json!({"op": "pair_revoked", "pair_id": pair_mac, "by": android.id()})
-    );
+    assert_eq!(mac_ws.recv_json().await, frame(pair_mac, &items[0]));
     // Offline peer: told when it connects, then the notice is gone.
     let mut iphone_ws = connect(&relay, &iphone).await;
-    assert_eq!(
-        iphone_ws.recv_json().await,
-        json!({"op": "pair_revoked", "pair_id": pair_iphone, "by": android.id()})
-    );
+    assert_eq!(iphone_ws.recv_json().await, frame(pair_iphone, &items[1]));
     iphone_ws.expect_quiet(Duration::from_millis(200)).await;
     iphone_ws.close().await;
     let mut iphone_ws = connect(&relay, &iphone).await;
@@ -311,7 +327,7 @@ async fn deleting_all_data_revokes_pairs_now_and_on_reconnect() {
         "DELETE",
         "/v1/devices/me?revoke_pairs=true",
         &android.token,
-        None,
+        Some(&body),
     )
     .await;
     assert_eq!(status, StatusCode::NO_CONTENT);

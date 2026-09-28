@@ -16,6 +16,7 @@ use common::relay_harness::{call, enroll, pair_body};
 use redis::AsyncCommands;
 use relay_server::clock::now_ms;
 use relay_server::config::{Config, RelaySettings};
+use relay_server::limits::registration_key;
 use relay_server::relay::presence::revoked_notice_key;
 use relay_server::state::AppState;
 use relay_server::{MIGRATOR, configure};
@@ -169,20 +170,56 @@ async fn devices_remove_themselves_with_or_without_revoking() {
     .await;
     assert_eq!(status, StatusCode::CREATED);
 
-    // Delete all data: every peer gets a 30-day notice.
-    let (status, _) = call(
-        &app,
-        "DELETE",
-        "/v1/devices/me?revoke_pairs=true",
-        &android.token,
-        None,
-    )
-    .await;
+    // Delete all data needs one signed statement per unrevoked pair; a
+    // missing or bad one deletes nothing (SET-02 API 2 logic 3).
+    let delete_all = "/v1/devices/me?revoke_pairs=true";
+    let stale = now_ms() - 11 * 60 * 1000;
+    for (what, body) in [
+        ("no body", None),
+        ("no statement", Some(json!({"revocations": []}))),
+        (
+            "another pair only",
+            Some(json!({"revocations": [android.device.revocation(pair_mac)]})),
+        ),
+        (
+            "signed by the peer",
+            Some(json!({"revocations": [iphone.device.revocation(pair_iphone)]})),
+        ),
+        (
+            "stale",
+            Some(
+                json!({"revocations": [{"pair_id": pair_iphone, "revoked_at": stale,
+            "sig": android.device.revoke_sig(pair_iphone, stale)}]}),
+            ),
+        ),
+        ("not json", Some(json!("revocations"))),
+    ] {
+        let (status, err) = call(&app, "DELETE", delete_all, &android.token, body.as_ref()).await;
+        assert_eq!(
+            (status, code(&err)),
+            (StatusCode::BAD_REQUEST, "BAD_REQUEST"),
+            "{what}"
+        );
+        assert_eq!(pair_rows(pair_iphone).await, 1, "{what}");
+    }
+    // Every peer gets a 30-day notice with the statement; statements for
+    // pairs the relay does not hold are ignored.
+    let item = android.device.revocation(pair_iphone);
+    let body = json!({"revocations": [android.device.revocation(Uuid::new_v4()), item]});
+    let (status, _) = call(&app, "DELETE", delete_all, &android.token, Some(&body)).await;
     assert_eq!(status, StatusCode::NO_CONTENT);
     assert_eq!(pair_rows(pair_iphone).await, 0);
     let key = revoked_notice_key(&iphone.id());
     let notices: Vec<String> = redis.smembers(&key).await.unwrap();
-    assert_eq!(notices, vec![format!("{pair_iphone}|{}", android.id())]);
+    assert_eq!(
+        notices,
+        vec![format!(
+            "{pair_iphone}|{}|{}|{}",
+            android.id(),
+            item["revoked_at"],
+            item["sig"].as_str().unwrap()
+        )]
+    );
     let ttl: i64 = redis.ttl(&key).await.unwrap();
     assert!(ttl > 29 * 24 * 3600 && ttl <= 30 * 24 * 3600, "{ttl}");
 
@@ -205,15 +242,22 @@ async fn devices_remove_themselves_with_or_without_revoking() {
 
 /// State with the registration limit on and one trusted proxy.
 async fn limited_state(proxy: &str) -> web::Data<AppState> {
+    state_with(RelaySettings {
+        trusted_proxies: vec![proxy.parse().unwrap()],
+        // The relay-wide cap is tested on its own (other tests register too).
+        max_registrations_per_hour: u64::MAX,
+        ..RelaySettings::default()
+    })
+    .await
+}
+
+async fn state_with(settings: RelaySettings) -> web::Data<AppState> {
     let config = Config {
         database_url: std::env::var("DATABASE_URL").unwrap(),
         redis_url: std::env::var("REDIS_URL").unwrap(),
         jwt_secret: TEST_JWT_SECRET.as_bytes().to_vec(),
         bind: String::new(),
-        settings: RelaySettings {
-            trusted_proxies: vec![proxy.parse().unwrap()],
-            ..RelaySettings::default()
-        },
+        settings,
         push: Default::default(),
     };
     let state = AppState::connect(&config).await.unwrap();
@@ -249,10 +293,13 @@ async fn new_registrations_are_limited_per_client_ip() {
     let proxy = "10.99.0.1";
     let state = limited_state(proxy).await;
     let app = test::init_service(App::new().app_data(state.clone()).configure(configure)).await;
-    // A random documentation address per run keeps runs independent.
+    // A random documentation /64 per run keeps runs independent.
     let n = u16::from_be_bytes(Uuid::new_v4().as_bytes()[..2].try_into().unwrap());
-    let client = format!("2001:db8::{n:x}");
+    let m = u16::from_be_bytes(Uuid::new_v4().as_bytes()[..2].try_into().unwrap());
+    let client = format!("2001:db8:{n:x}:{m:x}::1");
     let direct = format!("[{client}]:5000");
+    // Another address in the same /64 is the same client.
+    let neighbour = format!("[2001:db8:{n:x}:{m:x}:ffff::9]:5000");
 
     let first = TestDevice::random();
     let (status, _) = register_from(
@@ -270,7 +317,7 @@ async fn new_registrations_are_limited_per_client_ip() {
     }
     let (status, retry) = register_from(
         &app,
-        &direct,
+        &neighbour,
         None,
         &TestDevice::random().registration_body("ios", now_ms()),
     )
@@ -297,7 +344,7 @@ async fn new_registrations_are_limited_per_client_ip() {
     .await;
     assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
     // ...while an untrusted peer's forwarded header is ignored.
-    let other = format!("[2001:db8::1:{n:x}]:5000");
+    let other = format!("[2001:db8:{n:x}:{:x}::1]:5000", m ^ 1);
     let (status, _) = register_from(
         &app,
         &other,
@@ -306,4 +353,94 @@ async fn new_registrations_are_limited_per_client_ip() {
     )
     .await;
     assert_eq!(status, StatusCode::CREATED);
+}
+
+#[actix_web::test]
+#[ignore = "needs PostgreSQL + Redis (docker compose)"]
+async fn new_registrations_are_capped_relay_wide() {
+    let open = limited_state("10.99.0.1").await;
+    let open_app = test::init_service(App::new().app_data(open.clone()).configure(configure)).await;
+    let known = TestDevice::random();
+    let (status, _) = register_from(
+        &open_app,
+        "198.51.100.20:5000",
+        None,
+        &known.registration_body("macos", now_ms()),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    // A cap already used up: every client is refused, whatever its address.
+    let full = state_with(RelaySettings {
+        registrations_per_ip_per_hour: u64::MAX,
+        max_registrations_per_hour: 0,
+        ..RelaySettings::default()
+    })
+    .await;
+    let app = test::init_service(App::new().app_data(full.clone()).configure(configure)).await;
+    let n = u16::from_be_bytes(Uuid::new_v4().as_bytes()[..2].try_into().unwrap());
+    let peer = format!("[2001:db8:{n:x}:1::1]:5000");
+    let (status, retry) = register_from(
+        &app,
+        &peer,
+        None,
+        &TestDevice::random().registration_body("ios", now_ms()),
+    )
+    .await;
+    assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
+    assert!((1..=3600).contains(&retry.unwrap()));
+    // The refused request did not use up the client's own quota.
+    let ip: std::net::IpAddr = format!("2001:db8:{n:x}:1::1").parse().unwrap();
+    let hour = now_ms().div_euclid(3_600_000);
+    let mut redis = full.redis.clone();
+    let mut used = 0;
+    for h in [hour - 1, hour] {
+        let n: Option<u64> = redis.get(registration_key(&ip, h)).await.unwrap();
+        used += n.unwrap_or(0);
+    }
+    assert_eq!(used, 0);
+    // Refreshing a registered device does not count.
+    let (status, _) = register_from(
+        &app,
+        &peer,
+        None,
+        &known.registration_body("macos", now_ms()),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+}
+
+#[actix_web::test]
+#[ignore = "needs PostgreSQL + Redis (docker compose)"]
+async fn a_pair_registered_during_delete_all_needs_a_statement_too() {
+    let state = state().await;
+    let app = app!(state);
+    let android = enroll(&app, "android").await;
+    let mac = enroll(&app, "macos").await;
+    // A POST /v1/pairs in flight: its insert holds the devices rows (FK).
+    let pair_id = Uuid::new_v4();
+    let mut tx = state.db.begin().await.unwrap();
+    sqlx::query(
+        "INSERT INTO pairs (pair_id, device_a, device_b, attestation, sig_a, sig_b)
+         VALUES ($1, $2, $3, '\\x00', '\\x00', '\\x00')",
+    )
+    .bind(pair_id)
+    .bind(android.id())
+    .bind(mac.id())
+    .execute(&mut *tx)
+    .await
+    .unwrap();
+    let db = state.db.clone();
+    let device = android.id();
+    let delete = actix_web::rt::spawn(async move {
+        relay_server::store::devices::delete_with_peers(&db, device, |held| {
+            Ok::<_, ()>(held.to_vec())
+        })
+        .await
+    });
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    tx.commit().await.unwrap();
+    // The delete waited for the pair and had to account for it.
+    let held = delete.await.unwrap().unwrap().unwrap();
+    assert_eq!(held, vec![(pair_id, mac.id())]);
 }

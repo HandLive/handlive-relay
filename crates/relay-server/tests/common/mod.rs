@@ -9,7 +9,7 @@ pub mod schemas;
 use ed25519_dalek::{Signer, SigningKey};
 use relay_server::b64u;
 use relay_server::device_identity::device_id_from_public_key;
-use relay_server::signatures::{auth_message, registration_message};
+use relay_server::signatures::{auth_message, registration_message, revoke_message};
 use ring::rand::{SecureRandom, SystemRandom};
 use serde_json::{Value, json};
 use uuid::Uuid;
@@ -65,6 +65,31 @@ impl TestDevice {
             "sig": b64u::encode(&sig),
         })
     }
+}
+
+impl TestDevice {
+    /// b64u `HLREVOKE1` signature of this device revoking `pair_id`.
+    pub fn revoke_sig(&self, pair_id: Uuid, revoked_at: i64) -> String {
+        let msg = revoke_message(&pair_id, &self.device_id, revoked_at as u64);
+        b64u::encode(&self.sign(&msg))
+    }
+
+    /// Body of `POST /v1/pairs/{pair_id}/revoke`, signed now.
+    pub fn revoke_body(&self, pair_id: Uuid) -> Value {
+        let at = relay_server::clock::now_ms();
+        json!({ "revoked_at": at, "sig": self.revoke_sig(pair_id, at) })
+    }
+
+    /// One `revocations[]` item of `DELETE /v1/devices/me`, signed now.
+    pub fn revocation(&self, pair_id: Uuid) -> Value {
+        let at = relay_server::clock::now_ms();
+        json!({ "pair_id": pair_id, "revoked_at": at, "sig": self.revoke_sig(pair_id, at) })
+    }
+}
+
+/// The `pair_revoked` frame a peer receives for `statement` fields.
+pub fn pair_revoked(pair_id: Uuid, by: Uuid, revoked_at: i64, sig: &str) -> Value {
+    json!({"op": "pair_revoked", "pair_id": pair_id, "by": by, "revoked_at": revoked_at, "sig": sig})
 }
 
 pub fn hex32(s: &str) -> [u8; 32] {

@@ -147,8 +147,8 @@ impl Conn {
             .await
             .map_err(|e| log::warn!("revoked notices lookup failed: {e}"))
             .unwrap_or_default();
-        for (pair_id, by) in revoked.iter().chain(notices.iter()) {
-            self.send_text(wire::pair_revoked_message(pair_id, by))
+        for statement in revoked.iter().chain(notices.iter()) {
+            self.send_text(wire::pair_revoked_message(statement))
                 .await
                 .map_err(|_| CLOSE_INTERNAL)?;
         }

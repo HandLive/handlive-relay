@@ -8,7 +8,7 @@ use actix_web::{HttpResponse, test, web};
 use relay_server::MIGRATOR;
 use relay_server::auth_extractor::AuthenticatedDevice;
 use relay_server::clock::now_ms;
-use relay_server::config::{Config, RelaySettings};
+use relay_server::config::Config;
 use relay_server::state::AppState;
 use serde_json::{Value, json};
 
@@ -23,7 +23,7 @@ pub async fn state() -> web::Data<AppState> {
         redis_url: std::env::var("REDIS_URL").expect("REDIS_URL"),
         jwt_secret: TEST_JWT_SECRET.as_bytes().to_vec(),
         bind: String::new(),
-        settings: RelaySettings::default(),
+        settings: super::relay_harness::test_settings(),
         push: super::push_mocks::offline_config(),
     };
     let state = AppState::connect(&config).await.expect("connect");

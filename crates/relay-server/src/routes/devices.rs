@@ -18,10 +18,10 @@ use crate::limits::{self, GROUP_REST, REST_PER_MINUTE};
 use crate::relay::bus::BusMessage;
 use crate::relay::connection::CLOSE_NORMAL;
 use crate::relay::presence;
+use crate::revocation::{DeleteRequest, verify_revocations};
 use crate::routes::pairs::notify;
 use crate::signatures::{registration_message, verify_device_signature};
 use crate::state::AppState;
-use crate::store::challenges::challenge_key;
 use crate::store::devices::{self, NewDevice, UpsertOutcome};
 
 /// Maximum clock skew between the device `ts` and the relay (5 minutes).
@@ -64,20 +64,21 @@ pub async fn register(
 ) -> Result<HttpResponse, ApiError> {
     let req = body.into_inner();
     let ik_sig_pub = verify_registration(&req, now_ms())?;
-    // At most 10 new devices per hour per client IP (CONN-03 API 1 logic 3).
+    // At most 10 new devices per hour per client IP (IPv6 per /64) and
+    // RELAY_MAX_REGISTRATIONS_PER_HOUR on the whole relay (CONN-03 API 1
+    // logic 3); refreshing a known device counts toward neither.
     let known = devices::find_key(&state.db, req.device_id)
         .await
         .map_err(|e| ApiError::internal("devices lookup", e))?;
     if known.is_none() {
-        let forwarded = http
-            .headers()
-            .get("x-forwarded-for")
-            .and_then(|v| v.to_str().ok());
-        let peer = http.peer_addr().map(|a| a.ip());
-        if let Some(ip) = limits::client_ip(peer, forwarded, &state.settings.trusted_proxies) {
-            let limit = state.settings.registrations_per_ip_per_hour;
-            limits::check_registration(&state.redis, &ip, limit).await?;
-        }
+        let ip = limits::request_ip(&http, &state.settings.trusted_proxies);
+        limits::check_registration(
+            &state.redis,
+            ip.as_ref(),
+            state.settings.registrations_per_ip_per_hour,
+            state.settings.max_registrations_per_hour,
+        )
+        .await?;
     }
     let new = NewDevice {
         device_id: req.device_id,
@@ -201,13 +202,15 @@ pub struct DeleteQuery {
 }
 
 /// Remove the calling device from the relay. `revoke_pairs=false` deregisters
-/// silently (the pairs keep working on the LAN); `true` revokes every pair and
-/// tells the peers now or when they next connect.
+/// silently (the pairs keep working on the LAN); `true` needs one signed
+/// statement per unrevoked pair, revokes them all and tells the peers now or
+/// when they next connect. A missing or bad statement deletes nothing.
 pub async fn delete_me(
     state: web::Data<AppState>,
     http: HttpRequest,
     query: web::Query<DeleteQuery>,
-) -> Result<HttpResponse, ApiError> {
+    body: Result<web::Json<DeleteRequest>, actix_web::Error>,
+) -> Result<HttpResponse, actix_web::Error> {
     // Not the usual extractor: a device already gone gets 204 (repeat call).
     let device_id = state
         .jwt
@@ -215,38 +218,57 @@ pub async fn delete_me(
     let found = devices::find_key(&state.db, device_id)
         .await
         .map_err(|e| ApiError::internal("devices lookup", e))?;
-    match found {
+    let key = match found {
         None => return Ok(HttpResponse::NoContent().finish()),
-        Some(key) if key.revoked => return Err(ApiError::DeviceRevoked),
-        Some(_) => {}
-    }
+        Some(key) if key.revoked => return Err(ApiError::DeviceRevoked.into()),
+        Some(key) => key,
+    };
     limits::check_device(&state.redis, &device_id, GROUP_REST, REST_PER_MINUTE).await?;
-    let peers = devices::delete_with_peers(&state.db, device_id)
-        .await
-        .map_err(|e| ApiError::internal("devices delete", e))?;
-    for (pair_id, peer) in &peers {
-        if query.revoke_pairs {
-            if let Err(e) =
-                presence::add_revoked_notice(&state.redis, peer, pair_id, &device_id).await
-            {
-                log::warn!("revoked notice failed: {e}");
+    let revocations = if query.revoke_pairs {
+        Some(body?.into_inner().revocations)
+    } else {
+        None
+    };
+    let ik_sig_pub: [u8; 32] = key
+        .ik_sig_pub
+        .try_into()
+        .map_err(|_| ApiError::internal("devices row", "ik_sig_pub not 32 bytes"))?;
+    let now = now_ms();
+    let deleted = devices::delete_with_peers(&state.db, device_id, |held| match &revocations {
+        Some(items) => {
+            verify_revocations(held, items, &device_id, &ik_sig_pub, now).map(|signed| {
+                signed
+                    .into_iter()
+                    .map(|(s, peer)| (peer, Some(s)))
+                    .collect()
+            })
+        }
+        None => Ok(held
+            .iter()
+            .map(|(_, peer)| (*peer, None))
+            .collect::<Vec<_>>()),
+    })
+    .await
+    .map_err(|e| ApiError::internal("devices delete", e))??;
+    for (peer, statement) in deleted {
+        match statement {
+            Some(statement) => {
+                if let Err(e) = presence::add_revoked_notice(&state.redis, &peer, &statement).await
+                {
+                    log::warn!("revoked notice failed: {e}");
+                }
+                notify(&state, &peer, &BusMessage::PairRevoked(statement)).await;
             }
-            let msg = BusMessage::PairRevoked {
-                pair_id: *pair_id,
-                by: device_id,
-            };
-            notify(&state, peer, &msg).await;
-        } else {
             // Silent: the peer's connection just stops routing the pair.
-            notify(&state, peer, &BusMessage::PairsChanged).await;
+            None => notify(&state, &peer, &BusMessage::PairsChanged).await,
         }
     }
     // Presence goes first, so the closing connection finds nothing of its own
-    // to release and announces no "offline" to the peers.
+    // to release and announces no "offline" to the peers. Pending challenges
+    // expire by themselves: `/v1/auth/token` finds no device row.
     let mut redis = state.redis.clone();
     let cleared: redis::RedisResult<()> = redis::cmd("DEL")
         .arg(presence::presence_key(&device_id))
-        .arg(challenge_key(&device_id))
         .query_async(&mut redis)
         .await;
     if let Err(e) = cleared {

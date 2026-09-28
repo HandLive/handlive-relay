@@ -88,18 +88,17 @@ async fn devices_on_two_instances_reach_each_other() {
 
     // Revoked through instance one, the Mac on instance two is told.
     let path = format!("/v1/pairs/{pair_id}/revoke");
-    let (status, _) = call(
-        &app_one,
-        "POST",
-        &path,
-        &android.token,
-        Some(&json!({"reason": "user"})),
-    )
-    .await;
+    let body = android.device.revoke_body(pair_id);
+    let (status, _) = call(&app_one, "POST", &path, &android.token, Some(&body)).await;
     assert_eq!(status, StatusCode::NO_CONTENT);
     assert_eq!(
         mac_ws.recv_json().await,
-        json!({"op": "pair_revoked", "pair_id": pair_id, "by": android.id()})
+        common::pair_revoked(
+            pair_id,
+            android.id(),
+            body["revoked_at"].as_i64().unwrap(),
+            body["sig"].as_str().unwrap()
+        )
     );
     mac_ws
         .send_json(&json!({"to": android.id(), "env": envelope("sms", "eA==")}))

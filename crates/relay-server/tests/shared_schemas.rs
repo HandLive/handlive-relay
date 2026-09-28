@@ -17,7 +17,7 @@ use common::relay_harness::{Relay, call, connect, pair_body};
 use common::schemas::Schemas;
 use common::{TestDevice, load_vectors};
 use relay_server::clock::now_ms;
-use relay_server::config::{Config, RelaySettings};
+use relay_server::config::Config;
 use relay_server::state::AppState;
 use relay_server::{MIGRATOR, b64u, configure};
 use serde_json::{Value, json};
@@ -49,10 +49,7 @@ async fn relay_output_matches_the_shared_schemas() {
         redis_url: std::env::var("REDIS_URL").unwrap(),
         jwt_secret: TEST_JWT_SECRET.as_bytes().to_vec(),
         bind: String::new(),
-        settings: RelaySettings {
-            registrations_per_ip_per_hour: u64::MAX,
-            ..RelaySettings::default()
-        },
+        settings: common::relay_harness::test_settings(),
         push: providers.config.clone(),
     };
     let state = web::Data::new(AppState::connect(&config).await.unwrap());
@@ -203,10 +200,22 @@ async fn relay_output_matches_the_shared_schemas() {
     mac_ws.send_json(&rv_msg).await;
     control.push(android_ws.recv_json().await);
     let path = format!("/v1/pairs/{pair_mac}/revoke");
-    let revoke = json!({"reason": "user"});
+    let mut revoke = android.device.revoke_body(pair_mac);
     schemas.check("relay-rest#pair-revoke-request", &revoke);
-    call(&app, "POST", &path, &android.token, Some(&revoke)).await;
-    control.push(mac_ws.recv_json().await);
+    revoke["reason"] = json!("user");
+    schemas.check("relay-rest#pair-revoke-request", &revoke);
+    let (status, _) = call(&app, "POST", &path, &android.token, Some(&revoke)).await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    // Frames sent to the Mac through the bus may arrive after this point on
+    // a loaded host: collect until the revocation shows up.
+    loop {
+        let msg = mac_ws.recv_json().await;
+        let done = msg["op"] == "pair_revoked";
+        control.push(msg);
+        if done {
+            break;
+        }
+    }
 
     let mut ops = std::collections::BTreeSet::new();
     for msg in &control {
@@ -246,7 +255,30 @@ async fn relay_output_matches_the_shared_schemas() {
         .await
         .1,
     );
-    assert!(errors.len() >= 6);
+    // Delete all data with one statement per pair (SET-02 API 2).
+    let delete = json!({"revocations": [iphone.device.revocation(pair_iphone)]});
+    schemas.check("relay-rest#devices-delete-request", &delete);
+    errors.push(
+        call(
+            &app,
+            "DELETE",
+            "/v1/devices/me?revoke_pairs=true",
+            &iphone.token,
+            Some(&json!({"revocations": []})),
+        )
+        .await
+        .1,
+    );
+    let (status, _) = call(
+        &app,
+        "DELETE",
+        "/v1/devices/me?revoke_pairs=true",
+        &iphone.token,
+        Some(&delete),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    assert!(errors.len() >= 7);
     for err in &errors {
         schemas.check("relay-rest#error-response", err);
     }

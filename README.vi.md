@@ -18,10 +18,10 @@ Kho này là một phần của workspace HandLive: kho hub `handlive` (tài li�
 | POST | `/v1/auth/challenge` | — | 0.6.4, CONN-03 API 2 |
 | POST | `/v1/auth/token` | — | 0.6.4, CONN-03 API 3 (JWT HS256, 900 s) |
 | PUT | `/v1/devices/me/push-token` | JWT | CONN-04 API 1 |
-| DELETE | `/v1/devices/me?revoke_pairs=<bool>` | JWT | SET-02 API 2, quyết định C16 |
+| DELETE | `/v1/devices/me?revoke_pairs=<bool>` | JWT | SET-02 API 2, quyết định C16; `true` cần một tuyên bố `HLREVOKE1` đã ký cho mỗi cặp chưa thu hồi |
 | POST | `/v1/pairs` | JWT | PAIR-01 API 8 (attestation + hai chữ ký) |
 | GET | `/v1/pairs[?include_revoked=<bool>]` | JWT | PAIR-02 API 1 |
-| POST | `/v1/pairs/{pair_id}/revoke` | JWT | PAIR-03 API 3 |
+| POST | `/v1/pairs/{pair_id}/revoke` | JWT | PAIR-03 API 3; body `{revoked_at, sig}` (`HLREVOKE1`, 0.6.2) |
 | POST | `/v1/push` | JWT | CONN-04 API 2–4 (đánh thức qua FCM, cảnh báo qua APNs) |
 | GET (WebSocket) | `/v1/relay` | JWT | CONN-03 API 4–6, PAIR-01 API 7, PAIR-03 API 4 |
 
@@ -36,7 +36,7 @@ Mọi endpoint dùng JWT đều kiểm thiết bị còn tồn tại (404 `DEVIC
 ### Kênh relay `/v1/relay`
 
 - Khung text `{"to","env"}` thành `{"from","env"}`, `env` được chép nguyên từng byte; khung nhị phân `HR` (`0x48 0x52` ‖ ver ‖ op ‖ device_id ‖ khung HL) được thay `device_id` đích bằng `device_id` nguồn. Chỉ hai thiết bị của một cặp hợp lệ gửi được cho nhau (`error NOT_PAIRED`); thiết bị đích không kết nối nhận `error NOT_CONNECTED`; khung quá 256 KiB nhận `error PAYLOAD_TOO_LARGE`; quá 2 MiB/s mỗi cặp thì relay đọc chậm lại chứ không bỏ khung.
-- Thông điệp điều khiển: `presence` (mọi cặp khi vừa kết nối, rồi mỗi lần thay đổi), `pair_revoked` (ngay lập tức, khi kết nối lại trong 30 ngày, và từ `revoked_notice`), `rv_join` / `rv_joined` / `rv_msg` (điểm hẹn ghép nối: hai thành viên, 180 s, chỉ envelope `pair`, chặn hello bằng PIN), `error`.
+- Thông điệp điều khiển: `presence` (mọi cặp khi vừa kết nối, rồi mỗi lần thay đổi), `pair_revoked` kèm tuyên bố đã ký của thiết bị thu hồi (ngay lập tức, khi kết nối lại trong 30 ngày, và từ `revoked_notice`; các cặp thu hồi trước khi có chữ ký không được gửi lại), `rv_join` / `rv_joined` / `rv_msg` (điểm hẹn ghép nối: hai thành viên, 180 s, chỉ envelope `pair`, chặn hello bằng PIN), `error`.
 - Nhiều instance cùng chạy (quyết định C5): `presence:<device_id>` ghi instance đang giữ kết nối của thiết bị, các instance chuyển tiếp cho nhau qua kênh Redis `dev:<device_id>`. Sau khi Redis khởi động lại, instance đăng ký kênh lại và khôi phục presence mà không ngắt thiết bị.
 - Mã đóng: 1000 (thiết bị tự gỡ khỏi relay), 4400 (luồng sai định dạng), 4409 (bị kết nối mới thay thế), 4411 (im lặng 45 s; relay ping mỗi 15 s), 4500 (lỗi nội bộ).
 - Thống kê: số envelope, số byte và số push theo `device_hash` = SHA-256(device_id ‖ muối theo tháng), muối chỉ nằm trong Redis 40 ngày; tác vụ hằng ngày xóa thống kê quá 30 ngày và thiết bị không hoạt động 180 ngày.
@@ -83,7 +83,7 @@ docker compose down -v                    # dừng và xóa volume dev
 
 `tests/relay_redis_restart.rs` xóa sạch cơ sở dữ liệu Redis; chỉ chạy test tích hợp với Redis dev, mỗi lần một file test (mặc định của `cargo test`). Test push dùng máy chủ APNs/FCM giả chạy cục bộ và khóa sinh ra mỗi lần chạy; không cần thông tin xác thực thật.
 
-Kiểm thử tải trên một máy (`../shared/tools/bench/relay_load.py`): chạy relay với `RELAY_TRUSTED_PROXIES=127.0.0.1`; script gửi mỗi thiết bị giả một địa chỉ `X-Forwarded-For`, nên giới hạn 10 đăng ký mới mỗi giờ áp cho từng địa chỉ giả thay vì cho 127.0.0.1.
+Kiểm thử tải trên một máy (`../shared/tools/bench/relay_load.py`): chạy relay ở `RELAY_BIND` loopback (khi đó `127.0.0.1` được tin mặc định) hoặc với `RELAY_TRUSTED_PROXIES=127.0.0.1`; script gửi mỗi thiết bị giả một địa chỉ `X-Forwarded-For`, nên giới hạn 10 đăng ký mới mỗi giờ áp cho từng địa chỉ giả thay vì cho 127.0.0.1. Đặt `RELAY_MAX_REGISTRATIONS_PER_HOUR` lớn hơn số thiết bị giả.
 
 ## Cấu hình
 
@@ -94,7 +94,8 @@ Kiểm thử tải trên một máy (`../shared/tools/bench/relay_load.py`): ch�
 | `RELAY_JWT_SECRET` | Khóa HS256 cho JWT của thiết bị, ≥ 32 byte (`openssl rand -base64 48`). Không bao giờ commit |
 | `RELAY_BIND` | Địa chỉ lắng nghe, mặc định `127.0.0.1:8080` |
 | `RELAY_INSTANCE_ID` | Tùy chọn: tên instance ghi vào `presence:<device_id>`; mặc định một UUID ngẫu nhiên mỗi lần khởi động |
-| `RELAY_TRUSTED_PROXIES` | Tùy chọn: danh sách IP (phân tách bằng dấu phẩy) của reverse proxy được tin `X-Forwarded-For` cho giới hạn đăng ký theo IP; không đặt thì dùng địa chỉ TCP của bên kết nối |
+| `RELAY_TRUSTED_PROXIES` | Tùy chọn: danh sách IP (phân tách bằng dấu phẩy) của reverse proxy được tin `X-Forwarded-For` cho các giới hạn theo IP (đăng ký, xác thực); để trống và `RELAY_BIND` là địa chỉ loopback thì relay tin `127.0.0.1` và `::1` (reverse proxy cùng máy); để trống và lắng nghe ở địa chỉ không phải loopback thì dùng địa chỉ TCP của bên kết nối và relay ghi cảnh báo khi khởi động. Bên kết nối không được tin mà gửi `X-Forwarded-For` được ghi log tối đa mỗi phút một lần. Máy khách IPv6 được tính theo /64; IPv6 ánh xạ IPv4 được tính như IPv4 |
+| `RELAY_MAX_REGISTRATIONS_PER_HOUR` | Tùy chọn: số đăng ký thiết bị mới tối đa mỗi giờ trên toàn relay, mặc định 1000; vượt → 429 `RATE_LIMITED` |
 | `RELAY_APNS_KEY_PATH` | Đường dẫn khóa nhà cung cấp APNs `.p8` (nằm ngoài kho). APNs bật khi biến này và ba biến sau đều được đặt |
 | `RELAY_APNS_KEY_ID` | Mã khóa của khóa `.p8` (`kid` của JWT) |
 | `RELAY_APNS_TEAM_ID` | Mã nhóm Apple (`iss` của JWT) |

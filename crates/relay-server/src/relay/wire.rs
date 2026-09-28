@@ -13,6 +13,8 @@ use serde_json::value::RawValue;
 use serde_json::{Value, json};
 use uuid::Uuid;
 
+use crate::revocation::RevokeStatement;
+
 /// Largest frame the relay forwards (envelope limit, spec 0.5.1 rule 4).
 pub const MAX_FRAME_BYTES: usize = 256 * 1024;
 /// Largest WebSocket message the decoder accepts at all; frames between
@@ -129,11 +131,15 @@ pub fn presence_message(pair_id: &Uuid, peer_device_id: &Uuid, online: bool) -> 
     .to_string()
 }
 
-pub fn pair_revoked_message(pair_id: &Uuid, by: &Uuid) -> String {
+/// `pair_revoked` with the revoking device's `HLREVOKE1` statement
+/// (PAIR-03 API 4).
+pub fn pair_revoked_message(statement: &RevokeStatement) -> String {
     json!({
         "op": "pair_revoked",
-        "pair_id": pair_id.hyphenated().to_string(),
-        "by": by.hyphenated().to_string(),
+        "pair_id": statement.pair_id.hyphenated().to_string(),
+        "by": statement.by.hyphenated().to_string(),
+        "revoked_at": statement.revoked_at,
+        "sig": crate::b64u::encode(&statement.sig),
     })
     .to_string()
 }

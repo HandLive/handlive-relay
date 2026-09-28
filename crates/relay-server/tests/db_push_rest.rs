@@ -16,7 +16,7 @@ use redis::AsyncCommands;
 use relay_push::PushConfig;
 use relay_server::challenge::minute_window;
 use relay_server::clock::now_ms;
-use relay_server::config::{Config, RelaySettings};
+use relay_server::config::Config;
 use relay_server::state::AppState;
 use relay_server::store::challenges::rate_limit_key;
 use relay_server::{MIGRATOR, configure};
@@ -29,7 +29,7 @@ async fn state_with(push: PushConfig) -> web::Data<AppState> {
         redis_url: std::env::var("REDIS_URL").unwrap(),
         jwt_secret: TEST_JWT_SECRET.as_bytes().to_vec(),
         bind: String::new(),
-        settings: RelaySettings::default(),
+        settings: common::relay_harness::test_settings(),
         push,
     };
     let state = AppState::connect(&config).await.unwrap();
@@ -269,14 +269,15 @@ async fn push_requests_are_checked_and_errors_mapped() {
 
     // Revoked pair: no more pushes (PAIR-03 API 3 logic 4).
     let path = format!("/v1/pairs/{pair_iphone}/revoke");
-    call(
+    let (status, _) = call(
         &app,
         "POST",
         &path,
         &iphone.token,
-        Some(&json!({"reason": "user"})),
+        Some(&iphone.device.revoke_body(pair_iphone)),
     )
     .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
     let (status, err) = post(&android, alert(pair_iphone, iphone.id(), env)).await;
     assert_eq!((status, code(&err)), (StatusCode::FORBIDDEN, "NOT_PAIRED"));
 

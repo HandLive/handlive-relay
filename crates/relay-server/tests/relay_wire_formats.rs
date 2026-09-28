@@ -12,6 +12,7 @@ use relay_server::relay::bandwidth::TokenBucket;
 use relay_server::relay::bus::{BusMessage, channel_device, device_channel};
 use relay_server::relay::rendezvous::{canonical_rv_id, rendezvous_allows};
 use relay_server::relay::wire::{self, RelayError};
+use relay_server::revocation::RevokeStatement;
 use relay_server::routes::devices::{PushTokenRequest, validate_push_token};
 use serde_json::value::RawValue;
 use serde_json::{Value, json};
@@ -96,10 +97,17 @@ fn control_messages_follow_the_catalog() {
         presence,
         json!({"op":"presence","pair_id":p.to_string(),"peer_device_id":B,"online":true})
     );
-    let revoked: Value = serde_json::from_str(&wire::pair_revoked_message(&p, &uuid(A))).unwrap();
+    let statement = RevokeStatement {
+        pair_id: p,
+        by: uuid(A),
+        revoked_at: 1_727_160_000_000,
+        sig: [7u8; 64],
+    };
+    let revoked: Value = serde_json::from_str(&wire::pair_revoked_message(&statement)).unwrap();
     assert_eq!(
         revoked,
-        json!({"op":"pair_revoked","pair_id":p.to_string(),"by":A})
+        json!({"op":"pair_revoked","pair_id":p.to_string(),"by":A,
+               "revoked_at":1_727_160_000_000_i64,"sig":relay_server::b64u::encode(&[7u8; 64])})
     );
     let joined: Value =
         serde_json::from_str(&wire::rv_joined_message("Eh8kKS4zOD1CR0xRVltgZQ", false)).unwrap();
@@ -143,10 +151,12 @@ fn bus_messages_round_trip() {
         BusMessage::Control {
             text: "{}".to_owned(),
         },
-        BusMessage::PairRevoked {
+        BusMessage::PairRevoked(RevokeStatement {
             pair_id: uuid(B),
             by: uuid(A),
-        },
+            revoked_at: -1,
+            sig: [0xa5; 64],
+        }),
         BusMessage::PairsChanged,
         BusMessage::Replace { conn_id: uuid(B) },
         BusMessage::Close { code: 1000 },
@@ -157,6 +167,8 @@ fn bus_messages_round_trip() {
     assert_eq!(BusMessage::decode(&[]), None);
     assert_eq!(BusMessage::decode(&[99]), None);
     assert_eq!(BusMessage::decode(&[7, 1]), None);
+    // A notice from before signed revocation (pair_id ‖ by only) is dropped.
+    assert_eq!(BusMessage::decode(&[4; 33]), None);
     assert_eq!(device_channel(&uuid(A)), format!("dev:{A}"));
     assert_eq!(channel_device(format!("dev:{A}").as_bytes()), Some(uuid(A)));
     assert_eq!(channel_device(b"presence:x"), None);
