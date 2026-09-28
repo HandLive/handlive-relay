@@ -57,7 +57,7 @@ jobs:
       run:
         working-directory: relay
     steps:
-      - name: Resolve matching branches of the hub and handlive-shared
+      - name: Resolve the matching branch of handlive-shared
         id: refs
         # relay/ does not exist before the checkout below, so this step cannot use the job's working directory.
         working-directory: .
@@ -67,13 +67,16 @@ jobs:
           GH_TOKEN: ${{ secrets.HANDLIVE_REPOS_TOKEN || github.token }}
         run: |
           # gh reads GH_TOKEN from the environment: the token never appears in a URL or on a command line.
+          # The branch name is URL-encoded for the path and passed to jq as data, never spliced into the filter.
           resolve() {
-            n="$(gh api "repos/${OWNER}/$1/git/matching-refs/heads/${BRANCH}" --jq "map(select(.ref == \"refs/heads/${BRANCH}\")) | length" 2>/dev/null || echo 0)"
+            path="$(jq -rn --arg b "$BRANCH" '$b | @uri')"
+            n="$(gh api "repos/${OWNER}/$1/git/matching-refs/heads/${path}" 2>/dev/null \
+              | jq --arg r "refs/heads/${BRANCH}" 'map(select(.ref == $r)) | length' 2>/dev/null || true)"
             if [ "$n" = 1 ]; then echo "$BRANCH"; else echo main; fi
           }
-          hub="$(resolve handlive)"; shared="$(resolve handlive-shared)"
-          echo "hub=$hub" >> "$GITHUB_OUTPUT"; echo "shared=$shared" >> "$GITHUB_OUTPUT"
-          echo "hub → $hub, handlive-shared → $shared"
+          shared="$(resolve handlive-shared)"
+          echo "shared=$shared" >> "$GITHUB_OUTPUT"
+          echo "handlive-shared → $shared"
 
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
@@ -147,7 +150,7 @@ jobs:
       RELAY_BIND: 127.0.0.1:8080
       RUST_LOG: info
     steps:
-      - name: Resolve matching branches of the hub and handlive-shared
+      - name: Resolve the matching branch of handlive-shared
         id: refs
         # relay/ does not exist before the checkout below, so this step cannot use the job's working directory.
         working-directory: .
@@ -157,13 +160,16 @@ jobs:
           GH_TOKEN: ${{ secrets.HANDLIVE_REPOS_TOKEN || github.token }}
         run: |
           # gh reads GH_TOKEN from the environment: the token never appears in a URL or on a command line.
+          # The branch name is URL-encoded for the path and passed to jq as data, never spliced into the filter.
           resolve() {
-            n="$(gh api "repos/${OWNER}/$1/git/matching-refs/heads/${BRANCH}" --jq "map(select(.ref == \"refs/heads/${BRANCH}\")) | length" 2>/dev/null || echo 0)"
+            path="$(jq -rn --arg b "$BRANCH" '$b | @uri')"
+            n="$(gh api "repos/${OWNER}/$1/git/matching-refs/heads/${path}" 2>/dev/null \
+              | jq --arg r "refs/heads/${BRANCH}" 'map(select(.ref == $r)) | length' 2>/dev/null || true)"
             if [ "$n" = 1 ]; then echo "$BRANCH"; else echo main; fi
           }
-          hub="$(resolve handlive)"; shared="$(resolve handlive-shared)"
-          echo "hub=$hub" >> "$GITHUB_OUTPUT"; echo "shared=$shared" >> "$GITHUB_OUTPUT"
-          echo "hub → $hub, handlive-shared → $shared"
+          shared="$(resolve handlive-shared)"
+          echo "shared=$shared" >> "$GITHUB_OUTPUT"
+          echo "handlive-shared → $shared"
 
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
