@@ -205,15 +205,22 @@ async fn devices_remove_themselves_with_or_without_revoking() {
 
 /// State with the registration limit on and one trusted proxy.
 async fn limited_state(proxy: &str) -> web::Data<AppState> {
+    state_with(RelaySettings {
+        trusted_proxies: vec![proxy.parse().unwrap()],
+        // The relay-wide cap is tested on its own (other tests register too).
+        max_registrations_per_hour: u64::MAX,
+        ..RelaySettings::default()
+    })
+    .await
+}
+
+async fn state_with(settings: RelaySettings) -> web::Data<AppState> {
     let config = Config {
         database_url: std::env::var("DATABASE_URL").unwrap(),
         redis_url: std::env::var("REDIS_URL").unwrap(),
         jwt_secret: TEST_JWT_SECRET.as_bytes().to_vec(),
         bind: String::new(),
-        settings: RelaySettings {
-            trusted_proxies: vec![proxy.parse().unwrap()],
-            ..RelaySettings::default()
-        },
+        settings,
         push: Default::default(),
     };
     let state = AppState::connect(&config).await.unwrap();
@@ -249,10 +256,13 @@ async fn new_registrations_are_limited_per_client_ip() {
     let proxy = "10.99.0.1";
     let state = limited_state(proxy).await;
     let app = test::init_service(App::new().app_data(state.clone()).configure(configure)).await;
-    // A random documentation address per run keeps runs independent.
+    // A random documentation /64 per run keeps runs independent.
     let n = u16::from_be_bytes(Uuid::new_v4().as_bytes()[..2].try_into().unwrap());
-    let client = format!("2001:db8::{n:x}");
+    let m = u16::from_be_bytes(Uuid::new_v4().as_bytes()[..2].try_into().unwrap());
+    let client = format!("2001:db8:{n:x}:{m:x}::1");
     let direct = format!("[{client}]:5000");
+    // Another address in the same /64 is the same client.
+    let neighbour = format!("[2001:db8:{n:x}:{m:x}:ffff::9]:5000");
 
     let first = TestDevice::random();
     let (status, _) = register_from(
@@ -270,7 +280,7 @@ async fn new_registrations_are_limited_per_client_ip() {
     }
     let (status, retry) = register_from(
         &app,
-        &direct,
+        &neighbour,
         None,
         &TestDevice::random().registration_body("ios", now_ms()),
     )
@@ -297,7 +307,7 @@ async fn new_registrations_are_limited_per_client_ip() {
     .await;
     assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
     // ...while an untrusted peer's forwarded header is ignored.
-    let other = format!("[2001:db8::1:{n:x}]:5000");
+    let other = format!("[2001:db8:{n:x}:{:x}::1]:5000", m ^ 1);
     let (status, _) = register_from(
         &app,
         &other,
@@ -306,4 +316,49 @@ async fn new_registrations_are_limited_per_client_ip() {
     )
     .await;
     assert_eq!(status, StatusCode::CREATED);
+}
+
+#[actix_web::test]
+#[ignore = "needs PostgreSQL + Redis (docker compose)"]
+async fn new_registrations_are_capped_relay_wide() {
+    let open = limited_state("10.99.0.1").await;
+    let open_app = test::init_service(App::new().app_data(open.clone()).configure(configure)).await;
+    let known = TestDevice::random();
+    let (status, _) = register_from(
+        &open_app,
+        "198.51.100.20:5000",
+        None,
+        &known.registration_body("macos", now_ms()),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    // A cap already used up: every client is refused, whatever its address.
+    let full = state_with(RelaySettings {
+        registrations_per_ip_per_hour: u64::MAX,
+        max_registrations_per_hour: 0,
+        ..RelaySettings::default()
+    })
+    .await;
+    let app = test::init_service(App::new().app_data(full.clone()).configure(configure)).await;
+    let n = u16::from_be_bytes(Uuid::new_v4().as_bytes()[..2].try_into().unwrap());
+    let peer = format!("[2001:db8:{n:x}:1::1]:5000");
+    let (status, retry) = register_from(
+        &app,
+        &peer,
+        None,
+        &TestDevice::random().registration_body("ios", now_ms()),
+    )
+    .await;
+    assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
+    assert!((1..=3600).contains(&retry.unwrap()));
+    // Refreshing a registered device does not count.
+    let (status, _) = register_from(
+        &app,
+        &peer,
+        None,
+        &known.registration_body("macos", now_ms()),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
 }

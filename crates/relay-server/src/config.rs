@@ -2,7 +2,7 @@
 //! and `relay/README.md`). Secrets are never read from files in the repository.
 
 use std::env;
-use std::net::IpAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::time::Duration;
 
 use relay_push::PushConfig;
@@ -29,6 +29,11 @@ impl Config {
         if let Ok(list) = env::var("RELAY_TRUSTED_PROXIES") {
             settings.trusted_proxies = parse_ip_list(&list)?;
         }
+        if let Ok(cap) = env::var("RELAY_MAX_REGISTRATIONS_PER_HOUR") {
+            settings.max_registrations_per_hour = cap.trim().parse().map_err(|_| {
+                format!("RELAY_MAX_REGISTRATIONS_PER_HOUR: not a whole number: {cap}")
+            })?;
+        }
         Ok(Self {
             database_url: required("DATABASE_URL")?,
             redis_url: required("REDIS_URL")?,
@@ -48,8 +53,11 @@ pub struct RelaySettings {
     pub instance_id: String,
     /// Reverse proxies whose `X-Forwarded-For` is believed (0.9.4 `rl:ip:`).
     pub trusted_proxies: Vec<IpAddr>,
-    /// New registrations per client IP per hour (CONN-03 API 1).
+    /// New registrations per client IP per hour (`RELAY_REG_IP_LIMIT`).
     pub registrations_per_ip_per_hour: u64,
+    /// New registrations of the whole relay per hour
+    /// (`RELAY_MAX_REGISTRATIONS_PER_HOUR`, CONN-03 API 1).
+    pub max_registrations_per_hour: u64,
     /// Renewal period of `presence:<device_id>` (TTL 60 s, renewed every 20 s).
     pub presence_refresh: Duration,
     /// WebSocket ping period of the relay (`WS_PING_INTERVAL`).
@@ -72,6 +80,7 @@ impl Default for RelaySettings {
             instance_id: uuid::Uuid::new_v4().hyphenated().to_string(),
             trusted_proxies: Vec::new(),
             registrations_per_ip_per_hour: 10,
+            max_registrations_per_hour: 1_000,
             presence_refresh: Duration::from_secs(20),
             ping_interval: Duration::from_secs(15),
             idle_timeout: Duration::from_secs(45),
@@ -93,6 +102,28 @@ pub fn parse_ip_list(list: &str) -> Result<Vec<IpAddr>, String> {
                 .map_err(|_| format!("RELAY_TRUSTED_PROXIES: not an IP address: {s}"))
         })
         .collect()
+}
+
+/// The startup warning of CONN-03 API 1 logic 4: behind a reverse proxy
+/// without `RELAY_TRUSTED_PROXIES` every client has the proxy's address, so
+/// the per-IP limits count all clients together. `None` when the relay binds
+/// a loopback address or trusts at least one proxy.
+pub fn proxy_warning(bind: &str, trusted: &[IpAddr]) -> Option<String> {
+    if !trusted.is_empty() {
+        return None;
+    }
+    let loopback = match bind.parse::<SocketAddr>() {
+        Ok(addr) => addr.ip().is_loopback(),
+        Err(_) => bind
+            .rsplit_once(':')
+            .is_some_and(|(host, _)| host.eq_ignore_ascii_case("localhost")),
+    };
+    (!loopback).then(|| {
+        format!(
+            "RELAY_TRUSTED_PROXIES is empty and the relay binds {bind}: the per-IP limits \
+             count the TCP peer, which is the proxy's address when a reverse proxy is in front"
+        )
+    })
 }
 
 fn required(name: &str) -> Result<String, String> {

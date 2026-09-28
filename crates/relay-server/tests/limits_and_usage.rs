@@ -3,9 +3,10 @@
 
 use std::net::IpAddr;
 
-use relay_server::config::{RelaySettings, parse_ip_list};
+use relay_server::config::{RelaySettings, parse_ip_list, proxy_warning};
 use relay_server::limits::{
-    auth_ip_key, challenge_quota_key, client_ip, ip_bucket, registration_key,
+    auth_ip_key, challenge_quota_key, client_ip, global_registration_key, ip_bucket,
+    registration_key,
 };
 use relay_server::maintenance::cleanup_lock_key;
 use relay_server::store::challenges::challenge_key;
@@ -55,6 +56,7 @@ fn forwarded_for_is_only_believed_from_trusted_proxies() {
 fn settings_defaults_are_the_spec_values() {
     let s = RelaySettings::default();
     assert_eq!(s.registrations_per_ip_per_hour, 10);
+    assert_eq!(s.max_registrations_per_hour, 1_000);
     assert_eq!(s.presence_refresh.as_secs(), 20);
     assert_eq!(s.ping_interval.as_secs(), 15);
     assert_eq!(s.pair_bandwidth_bytes_per_sec, 2 * 1024 * 1024);
@@ -71,12 +73,39 @@ fn settings_defaults_are_the_spec_values() {
 }
 
 #[test]
+fn startup_warns_about_a_public_bind_without_trusted_proxies() {
+    for bind in [
+        "0.0.0.0:8080",
+        "[::]:8080",
+        "203.0.113.7:443",
+        "relay.example.com:8080",
+    ] {
+        assert!(proxy_warning(bind, &[]).is_some(), "{bind}");
+        assert_eq!(proxy_warning(bind, &[ip("10.0.0.2")]), None, "{bind}");
+    }
+    for bind in [
+        "127.0.0.1:8080",
+        "[::1]:8080",
+        "localhost:8080",
+        "127.0.0.2:1",
+    ] {
+        assert_eq!(proxy_warning(bind, &[]), None, "{bind}");
+    }
+}
+
+#[test]
 fn redis_key_forms() {
     assert_eq!(
         registration_key(&ip("203.0.113.7"), 480_000),
         "rl:ip:203.0.113.7:reg:480000"
     );
     // 2026-09-26T00:00:00Z = 1790380800000 ms, UTC day 20722.
+    // IPv6 clients count per /64 in every `rl:ip:` key.
+    assert_eq!(
+        registration_key(&ip("2001:db8:1:2:aaaa::7"), 480_000),
+        "rl:ip:2001:db8:1:2::/64:reg:480000"
+    );
+    assert_eq!(global_registration_key(480_000), "rl:reg:480000");
     assert_eq!(
         auth_ip_key(&ip("203.0.113.7"), 28_800_000),
         "rl:ip:203.0.113.7:auth:28800000"

@@ -17,7 +17,7 @@ use common::relay_harness::{Relay, call, connect, pair_body};
 use common::schemas::Schemas;
 use common::{TestDevice, load_vectors};
 use relay_server::clock::now_ms;
-use relay_server::config::{Config, RelaySettings};
+use relay_server::config::Config;
 use relay_server::state::AppState;
 use relay_server::{MIGRATOR, b64u, configure};
 use serde_json::{Value, json};
@@ -49,10 +49,7 @@ async fn relay_output_matches_the_shared_schemas() {
         redis_url: std::env::var("REDIS_URL").unwrap(),
         jwt_secret: TEST_JWT_SECRET.as_bytes().to_vec(),
         bind: String::new(),
-        settings: RelaySettings {
-            registrations_per_ip_per_hour: u64::MAX,
-            ..RelaySettings::default()
-        },
+        settings: common::relay_harness::test_settings(),
         push: providers.config.clone(),
     };
     let state = web::Data::new(AppState::connect(&config).await.unwrap());

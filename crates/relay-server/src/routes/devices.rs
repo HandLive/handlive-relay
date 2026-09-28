@@ -63,20 +63,21 @@ pub async fn register(
 ) -> Result<HttpResponse, ApiError> {
     let req = body.into_inner();
     let ik_sig_pub = verify_registration(&req, now_ms())?;
-    // At most 10 new devices per hour per client IP (CONN-03 API 1 logic 3).
+    // At most 10 new devices per hour per client IP (IPv6 per /64) and
+    // RELAY_MAX_REGISTRATIONS_PER_HOUR on the whole relay (CONN-03 API 1
+    // logic 3); refreshing a known device counts toward neither.
     let known = devices::find_key(&state.db, req.device_id)
         .await
         .map_err(|e| ApiError::internal("devices lookup", e))?;
     if known.is_none() {
-        let forwarded = http
-            .headers()
-            .get("x-forwarded-for")
-            .and_then(|v| v.to_str().ok());
-        let peer = http.peer_addr().map(|a| a.ip());
-        if let Some(ip) = limits::client_ip(peer, forwarded, &state.settings.trusted_proxies) {
-            let limit = state.settings.registrations_per_ip_per_hour;
-            limits::check_registration(&state.redis, &ip, limit).await?;
-        }
+        let ip = limits::request_ip(&http, &state.settings.trusted_proxies);
+        limits::check_registration(
+            &state.redis,
+            ip.as_ref(),
+            state.settings.registrations_per_ip_per_hour,
+            state.settings.max_registrations_per_hour,
+        )
+        .await?;
     }
     let new = NewDevice {
         device_id: req.device_id,

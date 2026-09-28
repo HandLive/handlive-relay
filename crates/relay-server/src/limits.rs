@@ -27,7 +27,7 @@ pub const GROUP_REST: &str = "rest";
 pub const GROUP_PUSH: &str = "push";
 
 const HOUR_MS: i64 = 3_600_000;
-const IP_WINDOW_TTL_SECS: i64 = 3_600;
+const HOUR_WINDOW_TTL_SECS: i64 = 3_600;
 
 /// Count one call of `device_id` in `group`; 429 with `Retry-After` when the
 /// minute's quota is used up.
@@ -57,7 +57,12 @@ pub fn ip_bucket(ip: &IpAddr) -> String {
 
 /// `rl:ip:<ip>:reg:<hour>` (TTL 3,600 s).
 pub fn registration_key(ip: &IpAddr, hour: i64) -> String {
-    format!("rl:ip:{ip}:reg:{hour}")
+    format!("rl:ip:{}:reg:{hour}", ip_bucket(ip))
+}
+
+/// `rl:reg:<hour>` (TTL 3,600 s): new registrations of the whole relay.
+pub fn global_registration_key(hour: i64) -> String {
+    format!("rl:reg:{hour}")
 }
 
 /// `rl:ip:<ip>:auth:<minute>` (TTL 120 s).
@@ -114,20 +119,34 @@ pub fn request_ip(http: &HttpRequest, trusted: &[IpAddr]) -> Option<IpAddr> {
     client_ip(http.peer_addr().map(|a| a.ip()), forwarded, trusted)
 }
 
-/// Count one new registration from `ip`; 429 once more than `limit` new
-/// devices registered from it in the current hour.
+/// Count one new registration: first against `ip`'s hourly limit (when the
+/// client address is known), then against the relay-wide hourly cap. 429
+/// with `Retry-After` until the hour ends once either is used up.
 pub async fn check_registration(
     redis: &ConnectionManager,
-    ip: &IpAddr,
-    limit: u64,
+    ip: Option<&IpAddr>,
+    per_ip_limit: u64,
+    global_limit: u64,
 ) -> Result<(), ApiError> {
     let now = now_ms();
-    let key = registration_key(ip, now.div_euclid(HOUR_MS));
+    let hour = now.div_euclid(HOUR_MS);
+    if let Some(ip) = ip {
+        count_hour(redis, &registration_key(ip, hour), per_ip_limit, now).await?;
+    }
+    count_hour(redis, &global_registration_key(hour), global_limit, now).await
+}
+
+async fn count_hour(
+    redis: &ConnectionManager,
+    key: &str,
+    limit: u64,
+    now: i64,
+) -> Result<(), ApiError> {
     let mut conn = redis.clone();
     let (count, _): (u64, bool) = redis::pipe()
         .atomic()
-        .incr(&key, 1)
-        .expire(&key, IP_WINDOW_TTL_SECS)
+        .incr(key, 1)
+        .expire(key, HOUR_WINDOW_TTL_SECS)
         .query_async(&mut conn)
         .await
         .map_err(|e| ApiError::internal("registration limit", e))?;
