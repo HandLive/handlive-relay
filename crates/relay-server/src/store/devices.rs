@@ -143,6 +143,14 @@ pub async fn delete_with_peers<T, E>(
     check: impl FnOnce(&[(Uuid, Uuid)]) -> Result<T, E>,
 ) -> Result<Result<T, E>, sqlx::Error> {
     let mut tx = pool.begin().await?;
+    // Lock the device row first: a concurrent pair insert holds a key-share
+    // lock on it (foreign key), so this waits for that pair to commit and the
+    // read below sees it, or makes the insert wait and then fail. No pair can
+    // be cascade-deleted without having been checked.
+    sqlx::query("SELECT 1 FROM devices WHERE device_id = $1 FOR UPDATE")
+        .bind(device_id)
+        .execute(&mut *tx)
+        .await?;
     let rows = sqlx::query(
         "SELECT pair_id,
                 CASE WHEN device_a = $1 THEN device_b ELSE device_a END AS peer_device_id

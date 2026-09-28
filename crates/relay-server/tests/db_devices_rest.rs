@@ -409,3 +409,38 @@ async fn new_registrations_are_capped_relay_wide() {
     .await;
     assert_eq!(status, StatusCode::OK);
 }
+
+#[actix_web::test]
+#[ignore = "needs PostgreSQL + Redis (docker compose)"]
+async fn a_pair_registered_during_delete_all_needs_a_statement_too() {
+    let state = state().await;
+    let app = app!(state);
+    let android = enroll(&app, "android").await;
+    let mac = enroll(&app, "macos").await;
+    // A POST /v1/pairs in flight: its insert holds the devices rows (FK).
+    let pair_id = Uuid::new_v4();
+    let mut tx = state.db.begin().await.unwrap();
+    sqlx::query(
+        "INSERT INTO pairs (pair_id, device_a, device_b, attestation, sig_a, sig_b)
+         VALUES ($1, $2, $3, '\\x00', '\\x00', '\\x00')",
+    )
+    .bind(pair_id)
+    .bind(android.id())
+    .bind(mac.id())
+    .execute(&mut *tx)
+    .await
+    .unwrap();
+    let db = state.db.clone();
+    let device = android.id();
+    let delete = actix_web::rt::spawn(async move {
+        relay_server::store::devices::delete_with_peers(&db, device, |held| {
+            Ok::<_, ()>(held.to_vec())
+        })
+        .await
+    });
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    tx.commit().await.unwrap();
+    // The delete waited for the pair and had to account for it.
+    let held = delete.await.unwrap().unwrap().unwrap();
+    assert_eq!(held, vec![(pair_id, mac.id())]);
+}
