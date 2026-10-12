@@ -2,44 +2,55 @@
 
 # handlive-relay
 
-Máy chủ chuyển tiếp khi các thiết bị không cùng mạng. Relay không đọc nội dung. Relay chỉ chuyển tiếp dữ liệu đã mã hóa đầu-cuối, không giải mã và không ghi nội dung vào log. Log chỉ có đường dẫn, mã trạng thái, kích thước và mã lỗi.
+[![License: Apache-2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 
-Rust, actix-web 4 + actix-ws, sqlx/PostgreSQL 16, Redis 7. Relay không có giao diện và không gửi câu chữ hiển thị. Lỗi là mã. Thiết bị tự dịch mã theo ngôn ngữ đang dùng (thiết kế chi tiết 0.12).
+Dịch vụ máy chủ chuyển tiếp (relay) đám mây không lưu dữ liệu của HandLive, viết bằng Rust (actix-web 4, actix-ws, sqlx/PostgreSQL 16, Redis 7). Dịch vụ định tuyến lưu lượng đã mã hóa đầu-cuối giữa các thiết bị HandLive đã ghép nối khi khác mạng. Relay không bao giờ đọc, giải mã hay lưu trữ nội dung dữ liệu truyền qua.
 
-Kho này là một phần của workspace HandLive: kho hub `handlive` (tài liệu, kế hoạch) là thư mục cha, `../shared` là kho `handlive-shared` (test đọc `../shared/test-vectors`). Clone cả bộ từ hub bằng `tools/workspace.sh clone <group-url>`; xem `CLAUDE.md`.
+## Tổng quan
+
+- **Chuyển tiếp không lưu dữ liệu:** Chuyển tiếp dữ liệu đã mã hóa đầu-cuối mà không giải mã hay ghi log nội dung. Log chỉ ghi nhận đường dẫn HTTP, mã trạng thái, kích thước byte và mã lỗi.
+- **Dịch vụ không giao diện:** Không có giao diện người dùng và không phát ra chuỗi hiển thị bản địa hóa. Lỗi được trả về dưới dạng mã máy chuẩn hóa; ứng dụng phía máy khách tự hiển thị theo ngôn ngữ tương ứng.
+- **Điều phối nhiều instance:** Các instance mở rộng theo chiều ngang, chia sẻ trạng thái kết nối qua Redis (`dev:<device_id>`). Khi Redis khởi động lại, các instance tự động đăng ký lại kênh và khôi phục presence mà không ngắt các máy khách đang kết nối.
+- **Proxy điều phối push:** Chuyển tiếp an toàn thông báo đánh thức tới Android qua FCM HTTP v1 và thông báo cảnh báo tới thiết bị Apple qua APNs trên nền HTTP/2.
+
+## Bối cảnh workspace
+
+Kho lưu trữ này là một thành phần trong workspace HandLive:
+- Kho hub [`handlive`](https://github.com/HandLive/handlive) (tài liệu, kế hoạch) là thư mục cha.
+- [`handlive-shared`](https://github.com/HandLive/handlive-shared) (`../shared`) cung cấp JSON schema và test vector dùng chung (test tích hợp đọc `../shared/test-vectors`).
+- Clone toàn bộ workspace từ hub bằng lệnh `tools/workspace.sh clone <group-url>`. Xem [`CLAUDE.md`](CLAUDE.md) để biết quy trình làm việc trong workspace.
 
 ## Endpoint
 
-Đặc tả: `../docs/detailed-design/00-common-specs.md` (0.4.3, 0.6.4, 0.7.3, 0.7.4, 0.8.2, 0.8.3, 0.9.4) và các chức năng lá ghi trong bảng.
+Đặc tả: [`docs/detailed-design/00-common-specs.md`](https://github.com/HandLive/handlive/blob/main/docs/detailed-design/00-common-specs.md) (0.4.3, 0.6.4, 0.7.3, 0.7.4, 0.8.2, 0.8.3, 0.9.4).
 
 | Method | Đường dẫn | Xác thực | Đặc tả |
 |--------|-----------|----------|--------|
-| POST | `/v1/devices` | Chữ ký `HLREG1` | CONN-03 API 1; tối đa 10 thiết bị mới mỗi giờ cho một IP |
+| POST | `/v1/devices` | Chữ ký `HLREG1` | CONN-03 API 1; tối đa 10 thiết bị mới mỗi giờ cho một IP máy khách |
 | POST | `/v1/auth/challenge` | — | 0.6.4, CONN-03 API 2 |
 | POST | `/v1/auth/token` | — | 0.6.4, CONN-03 API 3 (JWT HS256, 900 s) |
 | PUT | `/v1/devices/me/push-token` | JWT | CONN-04 API 1 |
 | DELETE | `/v1/devices/me?revoke_pairs=<bool>` | JWT | SET-02 API 2, quyết định C16; `true` cần một tuyên bố `HLREVOKE1` đã ký cho mỗi cặp chưa thu hồi |
-| POST | `/v1/pairs` | JWT | PAIR-01 API 8 (attestation + hai chữ ký) |
+| POST | `/v1/pairs` | JWT | PAIR-01 API 8 (chứng thực + hai chữ ký) |
 | GET | `/v1/pairs[?include_revoked=<bool>]` | JWT | PAIR-02 API 1 |
-| POST | `/v1/pairs/{pair_id}/revoke` | JWT | PAIR-03 API 3; body `{revoked_at, sig}` (`HLREVOKE1`, 0.6.2) |
-| POST | `/v1/push` | JWT | CONN-04 API 2–4 (đánh thức qua FCM, cảnh báo qua APNs) |
+| POST | `/v1/pairs/{pair_id}/revoke` | JWT | PAIR-03 API 3; thân `{revoked_at, sig}` (`HLREVOKE1`, 0.6.2) |
+| POST | `/v1/push` | JWT | CONN-04 API 2–4 (đánh thức FCM, cảnh báo APNs) |
 | GET (WebSocket) | `/v1/relay` | JWT | CONN-03 API 4–6, PAIR-01 API 7, PAIR-03 API 4 |
 
-Mọi endpoint dùng JWT đều kiểm thiết bị còn tồn tại (404 `DEVICE_NOT_FOUND`, 410 `DEVICE_REVOKED`) và tính vào giới hạn 60 lời gọi mỗi phút cho mỗi thiết bị (429 kèm `Retry-After`); `POST /v1/push` có giới hạn riêng 30 lần mỗi phút cho mỗi thiết bị gửi.
+Mọi endpoint dùng JWT đều kiểm tra thiết bị còn tồn tại (404 `DEVICE_NOT_FOUND`, 410 `DEVICE_REVOKED`) và áp dụng giới hạn 60 lượt gọi mỗi phút cho mỗi thiết bị (429 kèm `Retry-After`). `POST /v1/push` có giới hạn riêng 30 lượt gọi mỗi phút cho mỗi thiết bị gửi.
 
-### Push (`crates/relay-push`)
+### Proxy push (`crates/relay-push`)
 
-- `wake` → FCM HTTP v1 tới điện thoại Android: tin dữ liệu ưu tiên cao `{t: "wake", p: <pair_id>, r: <reason>}`, TTL tối đa 60 s, không có nội dung. Token truy cập OAuth2 lấy bằng khóa service account, dùng lại tới năm phút trước khi hết hạn.
-- `alert` → APNs qua HTTP/2 tới iPhone/iPad: `apns-push-type: alert`, `apns-priority: 10`, `apns-expiration`, `apns-collapse-id`, `apns-topic`; payload chỉ có `aps.alert.loc-key` (`push.sms_new`, `push.call_incoming`, `push.call_missed`), `mutable-content`, `sound`, `thread-id` (`sms` hoặc `calls`), `interruption-level`, cùng `p` (pair_id) và `hl` (envelope mã hóa bằng `K_push`, không lưu lại). Relay không gửi câu chữ hiển thị. Token nhà cung cấp ES256 được làm mới mỗi 50 phút.
-- `ttl_s` mặc định 60 s cho `wake`, 30 s cho cuộc gọi đến và 86.400 s cho SMS mới hoặc cuộc gọi nhỡ (nhận 0–86.400). Thiết bị đích phải là thành viên còn lại của một cặp hợp lệ (403) và có token (409 `PUSH_TOKEN_MISSING`); `wake` cùng lý do trong 5 phút trả 202 mà không gửi lần nữa; token bị nhà cung cấp báo hỏng thì bị xóa (409); lỗi nhà cung cấp trả 502 `PUSH_PROVIDER_ERROR` sau một lần thử lại khi gặp 500/503 hoặc lỗi mạng. Việc xếp hàng và thử lại push lỗi tới hạn chót là việc của `push_outbox` trên điện thoại (đặc tả 0.9.1).
+- `wake` → FCM HTTP v1 tới Android: tin dữ liệu ưu tiên cao `{t: "wake", p: <pair_id>, r: <reason>}`, TTL ≤ 60 s, không chứa nội dung tin nhắn. Token truy cập OAuth2 lấy từ file JSON service account của Google.
+- `alert` → APNs qua HTTP/2 tới thiết bị Apple: `apns-push-type: alert`, `apns-priority: 10`, `aps.alert.loc-key` (`push.sms_new`, `push.call_incoming`, `push.call_missed`), cùng envelope mã hóa `hl` niêm phong bằng `K_push`. Token nhà cung cấp ES256 được làm mới mỗi 50 phút.
+- `ttl_s` mặc định 60 s cho wake, 30 s cho cuộc gọi đến, và 86.400 s cho SMS mới hoặc cuộc gọi nhỡ. Đích đến phải thuộc về một cặp hợp lệ (403) và đã đăng ký push token (409 `PUSH_TOKEN_MISSING`). Yêu cầu wake trùng lặp cùng lý do trong 5 phút sẽ trả về 202 mà không gửi lại.
 
-### Kênh relay `/v1/relay`
+### Kênh relay (`/v1/relay`)
 
-- Khung text `{"to","env"}` thành `{"from","env"}`, `env` được chép nguyên từng byte; khung nhị phân `HR` (`0x48 0x52` ‖ ver ‖ op ‖ device_id ‖ khung HL) được thay `device_id` đích bằng `device_id` nguồn. Chỉ hai thiết bị của một cặp hợp lệ gửi được cho nhau (`error NOT_PAIRED`); thiết bị đích không kết nối nhận `error NOT_CONNECTED`; khung quá 256 KiB nhận `error PAYLOAD_TOO_LARGE`; quá 2 MiB/s mỗi cặp thì relay đọc chậm lại chứ không bỏ khung.
-- Thông điệp điều khiển: `presence` (mọi cặp khi vừa kết nối, rồi mỗi lần thay đổi), `pair_revoked` kèm tuyên bố đã ký của thiết bị thu hồi (ngay lập tức, khi kết nối lại trong 30 ngày, và từ `revoked_notice`; các cặp thu hồi trước khi có chữ ký không được gửi lại), `rv_join` / `rv_joined` / `rv_msg` (điểm hẹn ghép nối: hai thành viên, 180 s, chỉ envelope `pair`, chặn hello bằng PIN), `error`.
-- Nhiều instance cùng chạy (quyết định C5): `presence:<device_id>` ghi instance đang giữ kết nối của thiết bị, các instance chuyển tiếp cho nhau qua kênh Redis `dev:<device_id>`. Sau khi Redis khởi động lại, instance đăng ký kênh lại và khôi phục presence mà không ngắt thiết bị.
-- Mã đóng: 1000 (thiết bị tự gỡ khỏi relay), 4400 (luồng sai định dạng), 4409 (bị kết nối mới thay thế), 4411 (im lặng 45 s; relay ping mỗi 15 s), 4500 (lỗi nội bộ).
-- Thống kê: số envelope, số byte và số push theo `device_hash` = SHA-256(device_id ‖ muối theo tháng), muối chỉ nằm trong Redis 40 ngày; tác vụ hằng ngày xóa thống kê quá 30 ngày và thiết bị không hoạt động 180 ngày.
+- Khung văn bản `{"to","env"}` được chuyển tiếp thành `{"from","env"}` với phần envelope được sao chép nguyên từng byte. Khung nhị phân `HR` (`0x48 0x52` ‖ ver ‖ op ‖ device_id ‖ khung HL) thay thế `device_id` đích bằng ID nguồn.
+- Lưu lượng bị giới hạn trong các cặp đã xác thực (`error NOT_PAIRED`); máy kia mất kết nối sẽ nhận `error NOT_CONNECTED`; khung vượt quá 256 KiB trả về `error PAYLOAD_TOO_LARGE`. Băng thông vượt quá 2 MiB/s cho mỗi cặp sẽ làm chậm tốc độ đọc socket.
+- Thao tác điều khiển: `presence`, `pair_revoked` kèm tuyên bố đã ký, điểm hẹn ghép nối (`rv_join` / `rv_joined` / `rv_msg`), và `error`.
+- Mã đóng kết nối: 1000 (ngắt kết nối chủ động), 4400 (luồng dữ liệu sai định dạng), 4409 (bị kết nối mới hơn thay thế), 4411 (hết thời gian chờ sau 45 s nhàn rỗi; ping mỗi 15 s), 4500 (lỗi nội bộ).
 
 ## Bố cục
 
@@ -57,57 +68,69 @@ relay/
     src/store/            truy vấn PostgreSQL (devices, pairs, usage_daily)
 ```
 
+## Yêu cầu
+
+- **Rust:** Rust toolchain trên PATH
+- **Docker Compose:** Docker & Docker Compose để chạy dịch vụ PostgreSQL 16 + Redis 7 khi test tích hợp và phát triển
+
 ## Phát triển
 
-Cần Rust toolchain trên PATH (ví dụ `export PATH=/opt/homebrew/opt/rustup/bin:$PATH`).
+Yêu cầu Rust toolchain trên PATH (ví dụ `export PATH=/opt/homebrew/opt/rustup/bin:$PATH`).
 
 ```bash
 cd relay
 cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo test
 ```
 
-`cargo test` không cần dịch vụ nào: test cần PostgreSQL và Redis được đánh dấu `#[ignore]`.
+`cargo test` chạy không cần dịch vụ ngoài; các test cần PostgreSQL và Redis được đánh dấu `#[ignore]`.
 
 ### Với PostgreSQL + Redis
 
-Cổng host đã dời để không đụng PostgreSQL/Redis cục bộ: PostgreSQL `127.0.0.1:55432`, Redis `127.0.0.1:56379`.
+Cổng máy host được đổi để tránh xung đột với dịch vụ cục bộ: PostgreSQL `127.0.0.1:55432`, Redis `127.0.0.1:56379`.
 
 ```bash
 cd relay
 docker compose up -d --wait
-set -a && . ./.env.example && set +a      # hoặc .env của bạn
+set -a && . ./.env.example && set +a      # hoặc file .env của bạn
 cargo test -- --ignored                   # test tích hợp (WebSocket thật, hai instance)
 cargo run -p relay-server                 # chạy migration, lắng nghe ở RELAY_BIND
 docker compose down -v                    # dừng và xóa volume dev
 ```
 
-`tests/relay_redis_restart.rs` xóa sạch cơ sở dữ liệu Redis; chỉ chạy test tích hợp với Redis dev, mỗi lần một file test (mặc định của `cargo test`). Test push dùng máy chủ APNs/FCM giả chạy cục bộ và khóa sinh ra mỗi lần chạy; không cần thông tin xác thực thật.
+Test tích hợp sẽ xóa sạch Redis (`tests/relay_redis_restart.rs`); chỉ chạy test tích hợp trên instance Redis dành cho dev. Test push sử dụng máy chủ APNs/FCM giả lập kèm khóa tạm thời; không yêu cầu thông tin xác thực thật từ nhà cung cấp.
 
-Kiểm thử tải trên một máy (`../shared/tools/bench/relay_load.py`): chạy relay ở `RELAY_BIND` loopback (khi đó `127.0.0.1` được tin mặc định) hoặc với `RELAY_TRUSTED_PROXIES=127.0.0.1`; script gửi mỗi thiết bị giả một địa chỉ `X-Forwarded-For`, nên giới hạn 10 đăng ký mới mỗi giờ áp cho từng địa chỉ giả thay vì cho 127.0.0.1. Đặt `RELAY_MAX_REGISTRATIONS_PER_HOUR` lớn hơn số thiết bị giả.
+Kiểm thử tải trên một máy: chạy `../shared/tools/bench/relay_load.py` trên cấu hình loopback hoặc proxy tin cậy với mức `RELAY_MAX_REGISTRATIONS_PER_HOUR` được nâng cao.
 
 ## Cấu hình
 
 | Biến | Ý nghĩa |
 |------|---------|
-| `DATABASE_URL` | URL PostgreSQL |
-| `REDIS_URL` | URL Redis |
-| `RELAY_JWT_SECRET` | Khóa HS256 cho JWT của thiết bị, ≥ 32 byte (`openssl rand -base64 48`). Không bao giờ commit |
-| `RELAY_BIND` | Địa chỉ lắng nghe, mặc định `127.0.0.1:8080` |
-| `RELAY_INSTANCE_ID` | Tùy chọn: tên instance ghi vào `presence:<device_id>`; mặc định một UUID ngẫu nhiên mỗi lần khởi động |
-| `RELAY_TRUSTED_PROXIES` | Tùy chọn: danh sách IP (phân tách bằng dấu phẩy) của reverse proxy được tin `X-Forwarded-For` cho các giới hạn theo IP (đăng ký, xác thực); để trống và `RELAY_BIND` là địa chỉ loopback thì relay tin `127.0.0.1` và `::1` (reverse proxy cùng máy); để trống và lắng nghe ở địa chỉ không phải loopback thì dùng địa chỉ TCP của bên kết nối và relay ghi cảnh báo khi khởi động. Bên kết nối không được tin mà gửi `X-Forwarded-For` được ghi log tối đa mỗi phút một lần. Máy khách IPv6 được tính theo /64; IPv6 ánh xạ IPv4 được tính như IPv4 |
-| `RELAY_MAX_REGISTRATIONS_PER_HOUR` | Tùy chọn: số đăng ký thiết bị mới tối đa mỗi giờ trên toàn relay, mặc định 1000; vượt → 429 `RATE_LIMITED` |
-| `RELAY_APNS_KEY_PATH` | Đường dẫn khóa nhà cung cấp APNs `.p8` (nằm ngoài kho). APNs bật khi biến này và ba biến sau đều được đặt |
-| `RELAY_APNS_KEY_ID` | Mã khóa của khóa `.p8` (`kid` của JWT) |
-| `RELAY_APNS_TEAM_ID` | Mã nhóm Apple (`iss` của JWT) |
-| `RELAY_APNS_TOPIC` | Bundle id của ứng dụng iOS (`app.handlive.ios`); token push APNs phải ghi đúng topic này, nên khi chưa cấu hình APNs thì relay không lưu token APNs nào (400) |
-| `RELAY_APNS_URL`, `RELAY_APNS_SANDBOX_URL` | Tùy chọn: endpoint APNs, mặc định `https://api.push.apple.com` và `https://api.sandbox.push.apple.com` (token `apns_sandbox`) |
-| `RELAY_FCM_PROJECT_ID` | Mã dự án Firebase. FCM bật khi biến này và biến sau đều được đặt |
-| `RELAY_FCM_SERVICE_ACCOUNT_PATH` | Đường dẫn file JSON service account của Google (`client_email`, `private_key`, `token_uri`), nằm ngoài kho |
-| `RELAY_FCM_URL` | Tùy chọn: endpoint FCM, mặc định `https://fcm.googleapis.com` |
+| `DATABASE_URL` | URL kết nối PostgreSQL |
+| `REDIS_URL` | URL kết nối Redis |
+| `RELAY_JWT_SECRET` | Khóa bí mật HS256 cho JWT thiết bị, ≥ 32 byte (`openssl rand -base64 48`). Tuyệt đối không commit khóa này |
+| `RELAY_BIND` | Địa chỉ lắng nghe của máy chủ, mặc định `127.0.0.1:8080` |
+| `RELAY_INSTANCE_ID` | Tùy chọn tên instance ghi vào `presence:<device_id>`; mặc định là một UUID ngẫu nhiên mỗi lần khởi động |
+| `RELAY_TRUSTED_PROXIES` | Danh sách IP reverse proxy tin cậy (phân tách bằng dấu phẩy) cho header `X-Forwarded-For`. Khi lắng nghe ở loopback, mặc định tin `127.0.0.1` và `::1` |
+| `RELAY_MAX_REGISTRATIONS_PER_HOUR` | Giới hạn đăng ký thiết bị mới mỗi giờ trên toàn bộ relay, mặc định 1000; vượt quá trả về 429 `RATE_LIMITED` |
+| `RELAY_APNS_KEY_PATH` | Đường dẫn file khóa nhà cung cấp APNs `.p8` (nằm ngoài kho lưu trữ) |
+| `RELAY_APNS_KEY_ID` | ID khóa cho file `.p8` của APNs (JWT `kid`) |
+| `RELAY_APNS_TEAM_ID` | Apple Developer Team ID (JWT `iss`) |
+| `RELAY_APNS_TOPIC` | Bundle ID của ứng dụng iOS (`app.handlive.ios`) |
+| `RELAY_APNS_URL`, `RELAY_APNS_SANDBOX_URL` | Endpoint APNs, mặc định `https://api.push.apple.com` và `https://api.sandbox.push.apple.com` |
+| `RELAY_FCM_PROJECT_ID` | Project ID Firebase |
+| `RELAY_FCM_SERVICE_ACCOUNT_PATH` | Đường dẫn file JSON service account của Google (nằm ngoài kho lưu trữ) |
+| `RELAY_FCM_URL` | Endpoint FCM, mặc định `https://fcm.googleapis.com` |
 | `RUST_LOG` | Bộ lọc log, mặc định `info` |
 
-Khóa được đọc từ file khi khởi động; bộ biến APNs hoặc FCM thiếu một phần, hoặc khóa không đọc được, sẽ khiến relay dừng. Không có nhà cung cấp nào thì push loại đó trả 502. Không bao giờ commit khóa, file service account hay `.env`.
+## Tài liệu và cộng đồng
+
+- [Kiến trúc hệ thống](https://github.com/HandLive/handlive/blob/main/docs/system-architecture.vi.md) — Thiết kế hệ thống và mô hình bảo mật
+- [Thiết kế chi tiết](https://github.com/HandLive/handlive/tree/main/docs/detailed-design) — Giao thức, định dạng và đặc tả kỹ thuật
+- [Hướng dẫn triển khai](https://github.com/HandLive/handlive/blob/main/docs/deployment-guide.vi.md) — Đóng gói và phát hành ứng dụng
+- [CONTRIBUTING](https://github.com/HandLive/.github/blob/main/CONTRIBUTING.vi.md) — Quy trình gửi PR, commit nhỏ và ký xác nhận DCO (`git commit -s`)
+- [SECURITY](https://github.com/HandLive/.github/blob/main/SECURITY.vi.md) — Chính sách báo cáo lỗ hổng bảo mật
+- [CODE_OF_CONDUCT](https://github.com/HandLive/.github/blob/main/CODE_OF_CONDUCT.vi.md) — Quy tắc ứng xử cộng đồng
 
 ## Giấy phép
 
-Apache License 2.0 — xem [LICENSE](LICENSE). Đóng góp theo [CONTRIBUTING](https://github.com/HandLive/.github/blob/main/CONTRIBUTING.vi.md) (commit nhỏ, đứng tên người thật, ký DCO bằng `git commit -s`); báo lỗ hổng bảo mật kín theo [SECURITY](https://github.com/HandLive/.github/blob/main/SECURITY.vi.md).
+Apache License 2.0 — xem [LICENSE](LICENSE).
